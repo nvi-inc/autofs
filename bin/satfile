@@ -1,0 +1,5 @@
+#!/bin/bash
+source /usr2/autofs/venv_autofs/bin/activate
+export PYTHONPATH=/usr2/autofs/src/
+python /usr2/autofs/src/satfile.py -c /usr2/control/autofs.ctl $@
+

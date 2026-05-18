@@ -1,0 +1,13 @@
+[Unit]
+Description=AutoFS service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr2/autofs/bin/autofs-service
+StandardOutput=append:/usr2/autofs/log/service.log
+StandardError=append:/usr2/autofs/log/service.log
+Restart=always
+
+[Install]
+WantedBy=default.target
