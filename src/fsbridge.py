@@ -21,8 +21,11 @@ from utils import exec_app
 from fs_utils import Mask, Antenna, Position
 
 
-logger = getLogger('_autofs')
-
+import logging
+from logger import setup_logging
+setup_logging("/usr2/autofs/logger.yaml")
+logger=logging.getLogger('autofs')
+logger.debug('module call')
 
 class FSBridge:
     def __init__(self, server):
@@ -39,10 +42,11 @@ class FSBridge:
                     for conn in conns:
                         if conn.laddr and conn.laddr.port == self.port:
                             prc.kill()
+                            logger.info('killed success!')
                             return True
             except:
                 pass
-
+        
         return False
 
     def status(self, max_timeout=5) -> Tuple[bool, bool]:

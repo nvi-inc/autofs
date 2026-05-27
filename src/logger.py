@@ -1,10 +1,15 @@
 import gzip
 import logging
 import logging.handlers
+import logging.config
+
 import os
 
 from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
+
 
 # Custom filter use to format records
 class ContextFilter(logging.Filter):
@@ -14,6 +19,7 @@ class ContextFilter(logging.Filter):
 
 
 def set_logger(logger_name, log_path='', debug=False, console=False, size=1000000):
+    # defunct -gm
     # Functions needed to provide name of new compress file
     def namer(filename):
         folder = Path(filename).parent
@@ -44,3 +50,13 @@ def set_logger(logger_name, log_path='', debug=False, console=False, size=100000
         ch.setFormatter(formatter)
         logger.addHandler(ch)
     return logger
+
+
+
+
+def setup_logging(yaml_path: str) -> None:
+    from time import gmtime
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+    logging.config.dictConfig(config)
+    logging.Formatter.converter = gmtime

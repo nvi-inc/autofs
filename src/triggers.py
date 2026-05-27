@@ -37,6 +37,12 @@ class Manager(Thread):
         with self.mutex:
             self.triggers.pop(key)
 
+    # Remove all triggers
+    def reset_triggers(self):
+        with self.mutex:
+            self.triggers = {}
+            self.log_it("manager cleared all triggers", warning=True)
+
     # Close the log file
     def close_log(self):
         if self.log:

@@ -10,5 +10,5 @@ setup(
     author_email='mario.berube@nviinc.com',
     key_words=['vlbi', 'vcc', 'FS', 'satellite'],
     install_requires=['vcc @ git+https://github.com/nvi-inc/vcc-client', 'sqlalchemy', 'watchdog', 'pexpect',
-                      'ttkwidgets', 'tkcalendar']
+                      'ttkwidgets', 'tkcalendar','pyyaml']
 )

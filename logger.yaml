@@ -1,0 +1,64 @@
+version: 1
+disable_existing_loggers: False
+
+formatters:
+  default:
+    "()": logging.Formatter
+    format: '%(asctime)s.%(msecs)03d - %(levelname)8s - %(message)s'
+    datefmt: '%Y-%m-%d %H:%M:%S'
+
+  debugFormat:
+     format: '%(asctime)s.%(msecs)03d - %(levelname)8s - %(filename)10s - %(funcName)15s - %(message)s'
+     datefmt: '%Y-%m-%d %H:%M:%S'
+handlers:
+  satfile:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: debugFormat
+    filename: /usr2/autofs/log/satfile.log
+    encoding: utf8
+    maxBytes: 2097152
+    backupCount: 20
+    mode: a
+
+  autofs:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: debugFormat
+    filename: /usr2/autofs/log/autofs.log
+    encoding: utf8
+    maxBytes: 2097152
+    backupCount: 20
+    mode: a
+  
+  database:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: debugFormat
+    filename: /usr2/autofs/log/database.log
+    encoding: utf8
+    maxBytes: 2097152
+    backupCount: 20
+    mode: a
+
+  default:
+    formatter: debugFormat
+    level: DEBUG
+    class: logging.StreamHandler
+    stream: ext://sys.stderr
+
+loggers:
+  satfile:
+    level: DEBUG
+    handlers: [satfile,default,autofs]
+    propagate: no
+  autofs:
+    level: DEBUG
+    handlers: [default,autofs]
+  database:
+    level: DEBUG
+    handlers: [default, database]
+roots:
+  level: DEBUG
+  handlers: [autofs]
+  propagate: no

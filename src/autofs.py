@@ -12,7 +12,6 @@ from typing import Tuple, Optional, List
 
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
-from logging import getLogger
 
 from database import DBASE, TLE, Pass, Session
 from fsbridge import FSBridge
@@ -22,9 +21,11 @@ from ops_events import RepeatFunction
 from utils import Config
 from fs_utils import SnapFile, Scan, shift_wait_times
 from vcc_utils import get_upcoming_sessions
-from logger import set_logger
 
-# from satfile import AER
+import logging
+from logger import setup_logging
+setup_logging("/usr2/autofs/logger.yaml")
+logger=logging.getLogger('autofs')
 
 std_msg = "\"Controlled by AutoFS"
 
@@ -34,12 +35,13 @@ class AutoFS:
         # Catch signals
         signal.signal(signal.SIGTERM, self.terminate)
         signal.signal(signal.SIGINT, self.terminate)
+        signal.signal(signal.SIGUSR1, self.reset)
 
         self.config_path = path
         self.config = self.code = self.bridge = self.vcc_config = None
         self.read_config()
 
-        self.logger = set_logger('_autofs', log_path=self.config.log, debug=debug, console=console)
+        self.logger = logger
         self.logger.info('start service')
         self.threads = {}
         self.stopped = threading.Event()
@@ -49,12 +51,21 @@ class AutoFS:
         self.db_url = self.config.DataBase.url
         self.lastpass, self.last_msg = None, datetime.now(tz=timezone.utc).replace(tzinfo=None)
         self.echo_delay_start = True
+        self.mutex = threading.Lock()
 
     def terminate(self, sig_num, frame):
         self.logger.warning(f"received signal {sig_num}")
         self.stopped.set()
         for thread in self.threads.values():
             thread.stop()
+
+    def reset(self, sig_num, frame):
+        self.logger.warning(f'received signal {sig_num}. Reset triggers')
+        with self.mutex:
+            self.threads['manager'].reset_triggers()
+            self.update_sessions()
+            self.clean_triggers()
+        self.make_triggers()
 
     def exit(self, reason: str):
         self.logger.critical(f"exit {reason}")
@@ -78,6 +89,7 @@ class AutoFS:
             new_sessions = get_upcoming_sessions(self.vcc_config, days=14)
             must_delete = {s.code.lower() for s in old_sessions} - {d["code"].lower() for d in new_sessions}
             for ses in [ses for ses in old_sessions if ses.code.lower() in must_delete]:
+                logger.debug(f'Deleting old session {ses.code=}')
                 dbase.delete(ses)
             dbase.flush()
             for data in new_sessions:
@@ -93,7 +105,7 @@ class AutoFS:
                     for ses in upcoming:
                         satpass.validate_go(ses, delay)
                         if not satpass.go:
-                            self.logger.info(f"{satpass.satellite}-{satpass.id} intersects {ses.code}")
+                            self.logger.info(f"{satpass.satellite}-{satpass.id} no-go. cause: {ses.code}")
                             break
             dbase.commit()
 
@@ -115,37 +127,39 @@ class AutoFS:
     def make_triggers(self):
         # Check if fsbridge and fs are running
         if not all(self.bridge.status()):
+            logger.warning(f'Not all are running {self.bridge} {self.bridge.status()=}')
             return
 
-        delay = timedelta(minutes=10)
-        with DBASE(self.db_url) as dbase:
-            # Check if schedule is terminated but log is still opened
-            self.close_schedule(dbase)
-            # Get next sessions and passes
-            sessions = dbase.get_next_sessions(days=5)
-            passes = [p for p in dbase.get_next_passes(days=5) if p.go]
+        with self.mutex:
+            delay = timedelta(minutes=10)
+            with DBASE(self.db_url) as dbase:
+                # Check if schedule is terminated but log is still opened
+                self.close_schedule(dbase)
+                # Get next sessions and passes
+                sessions = dbase.get_next_sessions(days=5)
+                passes = [p for p in dbase.get_next_passes(days=5) if p.go]
 
-            # Check if enough time to do pre and post checks
-            self.validate_pre_check(sessions, passes)
-            self.validate_post_check(sessions, passes)
+                # Check if enough time to do pre and post checks
+                self.validate_pre_check(sessions, passes)
+                self.validate_post_check(sessions, passes)
 
-            # Make triggers for next session:
-            now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
-            for session in sessions:
-                if session.start > now:  # Do not start late schedule
-                    if not session.triggered:
-                        self.make_session_triggers(session)
-                    break
-            # Make trigger for next pass
-            for satpass in passes:
-                if satpass.start > now:
-                    if not satpass.triggered:
-                        if session := self.get_affected_session(satpass, sessions):
-                            self.make_pass_in_session_trigger(satpass, session)
-                        else:
-                            self.make_pass_trigger(satpass)
-                    break
-            dbase.commit()
+                # Make triggers for next session:
+                now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+                for session in sessions:
+                    if session.start > now:  # Do not start late schedule
+                        if not session.triggered:
+                            self.make_session_triggers(session)
+                        break
+                # Make trigger for next pass
+                for satpass in passes:
+                    if satpass.start > now:
+                        if not satpass.triggered:
+                            if session := self.get_affected_session(satpass, sessions):
+                                self.make_pass_in_session_trigger(satpass, session)
+                            else:
+                                self.make_pass_trigger(satpass)
+                        break
+                dbase.commit()
 
     def add_tle_commands(self, commands: List, satpass: Pass) -> List:
         cmds = []
@@ -204,8 +218,10 @@ class AutoFS:
                 return
             # Check if snp file exist and schedule is running
             if (actual_sched := self.bridge.get_schedule()) and actual_sched != sched:
-                self.logger.warning(f"running a different schedule ({actual_sched}) than {sched}")
-                return  # A schedule is running
+                self.logger.warning(f"running a different schedule bridge_sched={actual_sched} than db_sched={sched}")
+                self.logger.warning(f'wont issue satellite pass {satpass.satellite}-{satpass.id}')
+                satpass.triggered = True
+                return  # An unexpected schedule is running (none) or other
             if not path.exists() or not actual_sched:
                 self.make_pass_trigger(satpass)
                 return
@@ -304,6 +320,8 @@ class AutoFS:
                 session.pre = True
                 if previous and (session.start - previous.end) < min_time:
                     session.pre = False
+                
+                
                 else:
                     begin = session.start - min_time
                     for satpass in passes:
@@ -381,6 +399,18 @@ def service(config, debug=False):
     autofs.run()
 
 
+def reset():
+    import psutil
+    import os
+
+    autofs_path = __file__
+    for prc in psutil.process_iter():
+        params = prc.cmdline()
+        if autofs_path in params and 'service' in params:
+            os.kill(prc.pid, signal.SIGUSR1)
+
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -393,11 +423,14 @@ if __name__ == "__main__":
 
     parsers = parser.add_subparsers(dest="action")
     parsers.add_parser("service", help="Run autofs service")
+    parsers.add_parser("reset", help="Reset autofs triggers")
     parser.add_argument('-d', '--debug', action='store_true')
 
     args = parser.parse_args()
 
     if args.action == "service":
         service(args.config, args.debug)
+    elif args.action == "reset":
+        reset()
     else:
         DashBoard(args.config)

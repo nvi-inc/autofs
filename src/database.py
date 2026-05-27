@@ -11,6 +11,10 @@ from sqlalchemy.ext.declarative import declarative_base
 
 from fs_utils import Mask
 
+import logging
+from logger import setup_logging
+setup_logging("/usr2/autofs/logger.yaml")
+logger=logging.getLogger('database')
 
 Base = declarative_base()
 
@@ -207,6 +211,7 @@ class Pass(Base):
         return self.stop
 
     def update(self, start: datetime, stop: datetime, ascending: bool, aer: List[AER], mask: Mask) -> None:
+        logger.debug(f'updating {self.id=} {self.satellite=}')
         first, last, possible = None, None, 0
         self.start, self.stop, self.ascending = start, stop, ascending
         if aer:
@@ -232,9 +237,13 @@ class Pass(Base):
         # Check if pass intersects with session
         if self.intersecting(session, delay):
             if session.master == 'intensive':
+                logger.info(f'{self.satellite} {self.id} pass is no-go. it intersects \
+                 intensive {session.code=}')
                 self.go = False
             # Check if not too close to start of end of session
             elif self.start - session.start <= delay or session.end - self.end <= delay:
+                logger.info(f'{self.satellite} {self.id} pass is no-go. too close to \
+                    {session.code=} ')
                 self.go = False
 
     @property
@@ -324,15 +333,21 @@ class DBASE:
         return self.get(TLE, satellite=satellite)
 
     def get_pass(self, satellite, start, delta=timedelta(minutes=10), create=False):
+        '''
+        Gets the pass that's the first one after start for a given satellite
+        '''
         begin, end = start - delta, start + delta
         records = self.orm_ses.query(Pass).filter(
             and_(Pass.satellite==satellite, Pass.start.between(begin, end))
         ).order_by(Pass.start.asc()).all()
         if not records and create:
+            logger.debug(f'Didnt find records creating new pass {satellite=} {start=}')
             record = Pass()
             self.add(record)
             record.satellite, record.start = satellite, start
             return record
+        if len(records)> 1:
+            logger.warning('Found multiple passes, returning the first one')
         return records[0] if records else None
 
     def valid_pass(self, start, stop):

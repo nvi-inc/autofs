@@ -26,7 +26,7 @@ auto = false
 min_time = 15
 sources = 1
 [Standard.Procedures]
-pre = ["LOG", "\"Process started by AutoFS", "antenna=start", "CHECK", "SCHED"]
+pre = ["LOG", "\"Process started by AutoFS", "CHECK", "SCHED"]
 post = ["CHECK", "antenna=stow", "\"Process ended by AutoFS", "log=station"]
 
 [Intensive]
@@ -41,7 +41,7 @@ auto = false
 min_time = 15
 sources = 1
 [Intensive.Procedures]
-pre = ["LOG", "\"Process started by AutoFS", "antenna=start", "CHECK", "SCHED"]
+pre = ["LOG", "\"Process started by AutoFS", "CHECK", "SCHED"]
 post = ["CHECK", "antenna=stow", "\"Process ended by AutoFS", "log=station"]
 [Intensive.Standard]
 auto = true
@@ -62,7 +62,7 @@ after_start = 10
 before_end = 10
 [Satellite.Procedures.Pre]
 min_time = 10
-snaps = ["log=satobs", "\"Process started by AutoFS", "antenna=start", "TLE"]
+snaps = ["log=satobs", "\"Process started by AutoFS",  "TLE"]
 [Satellite.Procedures.Post]
 snaps = ["antenna=stow", "\"Process ended by AutoFS", "log=station"]
 [Satellite.Procedures.Session.Pre]

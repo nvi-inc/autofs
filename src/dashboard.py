@@ -26,6 +26,8 @@ class OpsFigure:
     width: int
     text_color: str
     font_size: float
+    triggered: bool=False
+    top: bool=False
 
     @property
     def end(self):
@@ -85,14 +87,17 @@ class TimeLine(tk.Frame):
 
     def add_session(self, ses):
         if ses.master == 'intensive':
-            fig = OpsFigure(ses.code, ses.start, ses.duration, '', 'red', 'black', 1, 'white', 12)
+            fig = OpsFigure(ses.code, ses.start, ses.duration, '', 'red', 'black', 1, 'white', 12
+                            , ses.triggered, False)
             self.add_figure(1, 'intensive', fig)
             return
-        fig = OpsFigure(ses.code, ses.start, ses.duration, ses.code.upper(), 'green', 'black', 1, 'white', 12)
+        triggered = False if ses.pre else ses.triggered
+        fig = OpsFigure(ses.code, ses.start, ses.duration, ses.code.upper(), 'green', 'black', 1, 'white', 12,
+                        triggered=triggered, top=False)
         self.add_figure(1, 'standard', fig)
         if ses.pre:
             start = ses.start - timedelta(seconds=1800)
-            fig = OpsFigure(ses.code, start, 1800, '', 'orange', 'black', 1, 'white', 12)
+            fig = OpsFigure(ses.code, start, 1800, '', 'orange', 'black', 1, 'white', 12, ses.triggered, False)
             self.add_figure(1, 'pre-obs', fig)
         if ses.post:
             start = ses.start + timedelta(seconds=ses.duration)
@@ -101,7 +106,7 @@ class TimeLine(tk.Frame):
 
     def add_satpass(self, satpass):
         fig = OpsFigure(f"{satpass.name}", satpass.start, satpass.duration, '',
-                        'blue' if satpass.go else 'skyblue', 'black', 0, 'white', 12)
+                        'blue' if satpass.go else 'skyblue', 'black', 0, 'white', 12, satpass.triggered, True)
         self.add_figure(1, 'pass', fig)
 
     def offset(self):
@@ -126,6 +131,15 @@ class TimeLine(tk.Frame):
                                     tags=(fig.code, tag, "text"),
                                     text=fig.label, anchor="center", fill=fig.text_color,
                                     font=("Courier New", fig.font_size, "bold"))
+        if fig.triggered:
+            delta = self.V[row].h / 4
+            dy = -delta if fig.top else delta
+            y1 = self.V[row].y + (0 if fig.top else self.V[row].h)
+            y2 = y1 + dy
+            points = [x1, y1, x1 + delta, y2, x1 - delta, y2]
+            self.canvas.create_polygon(points, fill="red")
+            print('triggers', fig.label, points)
+
         if row > 0:
             self.canvas.tag_bind(fig.code, "<Double-Button-1>", self.double_clicked)
         self.codes.add(key)
@@ -208,7 +222,7 @@ class DashBoard(tk.Tk):
             for satpass in self.passes.values():
                 self.time_line.add_satpass(satpass)
 
-        self.after(60, self.refresh_timeline)
+        self.after(60000, self.refresh_timeline)
 
     def goto_top(self, sig_num, frame):
         self.wm_attributes('-topmost', True)
@@ -288,7 +302,7 @@ class DashBoard(tk.Tk):
 
         #for sta in self.session.network:
         #    self.stations.insert('', 'end', sta.capitalize(), values=(sta.capitalize(), 'None', 'N/A'), tags=('all',))
-        #    self.comm_status[sta] = [datetime.utcnow() - timedelta(hours=1), False]
+        #    self.comm_status[sta] = [datetime.utce() - timedelta(hours=1), False]
         #    self.update_station_info(sta, '#5', "not connected to VCC", tags=('problem',))
 
         #self.inbox.ping_stations(self.session.network)
@@ -315,8 +329,16 @@ class DashBoard(tk.Tk):
             return '{}:{:02d}'.format(hours, minutes)
 
         code, description = session.code, f"{session.master.capitalize()} {session.type}"
+
+        if session.end < datetime.now(tz=timezone.utc).replace(tzinfo=None):
+            if self.events.exists(code):
+                self.events.delete(code)
+            return
+
         start, hm = session.start.strftime("%Y-%m-%d %H:%M"), duration(session.duration)
-        self.events.insert('', 'end', code, values=(code.upper(), description, start, hm, 'None', 'Yes'), tags=('all',))
+        if not self.events.exists(code):
+            self.events.insert('', 'end', code, values=(code.upper(), description, start, hm, 'None', 'Yes'),
+                               tags=('all',))
 
         #self.stations.set(sta_id, col, text)
         #if tags:
