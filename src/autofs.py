@@ -46,6 +46,7 @@ class AutoFS:
         self.threads = {}
         self.stopped = threading.Event()
         self.slew_delay = 60.0  #timedelta(seconds=60)
+        self.idle = False
 
         self.antenna = None
         self.db_url = self.config.DataBase.url
@@ -124,11 +125,31 @@ class AutoFS:
                 return ses
         return None
 
+    def should_idle(self,dbase):
+        sessions = dbase.get_next_sessions(days=5)
+        passes = [p for p in dbase.get_next_passes(days=5) if p.go]
+        start_times = [x.start for x in sessions + passes if (not x.triggered)]
+        start_times.sort()
+        now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+        for t in start_times:
+            if now < t:
+                # if event in the future
+                if (t-now) > timedelta(hours=1):
+                    # closest event is more than an hour away
+                    # nothing to do
+                    if not self.idle:
+                        logger.info(f'Idling. Next event at {t=}.')
+                    self.idle = True
+                else:
+                    self.idle = False
+                break
+
     def make_triggers(self):
         # Check if fsbridge and fs are running
         if not all(self.bridge.status()):
             logger.warning(f'Not all are running {self.bridge} {self.bridge.status()=}')
             return
+
 
         with self.mutex:
             delay = timedelta(minutes=10)
@@ -138,18 +159,29 @@ class AutoFS:
                 # Get next sessions and passes
                 sessions = dbase.get_next_sessions(days=5)
                 passes = [p for p in dbase.get_next_passes(days=5) if p.go]
-
+                now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+                self.should_idle(dbase)
+                if self.idle:
+                    return 
+                 
                 # Check if enough time to do pre and post checks
                 self.validate_pre_check(sessions, passes)
                 self.validate_post_check(sessions, passes)
 
                 # Make triggers for next session:
-                now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+                
                 for session in sessions:
                     if session.start > now:  # Do not start late schedule
                         if not session.triggered:
-                            self.make_session_triggers(session)
+                            if session.start - now < timedelta(hours=1):
+                                self.make_session_triggers(session)
+                                dbase.commit()
                         break
+
+                self.should_idle(dbase)
+                if self.idle:
+                    return
+
                 # Make trigger for next pass
                 for satpass in passes:
                     if satpass.start > now:
@@ -219,8 +251,8 @@ class AutoFS:
             # Check if snp file exist and schedule is running
             if (actual_sched := self.bridge.get_schedule()) and actual_sched != sched:
                 self.logger.warning(f"running a different schedule bridge_sched={actual_sched} than db_sched={sched}")
-                self.logger.warning(f'wont issue satellite pass {satpass.satellite}-{satpass.id}')
-                satpass.triggered = True
+                self.logger.warning(f'wont issue satellite pass {satpass.satellite}-{satpass.id} no-go')
+                satpass.go = False
                 return  # An unexpected schedule is running (none) or other
             if not path.exists() or not actual_sched:
                 self.make_pass_trigger(satpass)
@@ -275,6 +307,8 @@ class AutoFS:
     def make_session_triggers(self, session: Session):
         config = self.config.Intensive if session.is_intensive else self.config.Standard
         if not config.auto:
+            logger.info(f'Wont autostart for {session.code=} of type {session.master=}. Setting it as triggered.')
+            session.triggered = True 
             return
         start = session.start - timedelta(minutes=config.min_time)
         # Trigger for starting session observation
@@ -373,6 +407,7 @@ class AutoFS:
         self.logger.info("fsbrifge initialized")
 
         self.antenna = self.bridge.get_antenna_info()
+        logger.info(f'Antenna initialized {self.antenna=}')
         az_max, el_max = self.antenna.uplim1 - self.antenna.lolim1, self.antenna.uplim2 - self.antenna.lolim2
         az_delay, el_delay = az_max / self.antenna.slew1, el_max / self.antenna.slew2
         self.slew_delay = max(az_delay, el_delay) * 60.0  # timedelta(minutes=max(az_delay, el_delay))
