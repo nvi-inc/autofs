@@ -4,7 +4,12 @@ __pycache__/
 *$py.class
 
 *venv*
-
+log*
+*.db
+.vscode*
+.idea*
+# satfiles
+*.sat 
 # Distribution / packaging
 .Python
 build/

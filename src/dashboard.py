@@ -1,6 +1,7 @@
 import signal
 import sys
 import tkinter as tk
+from tkinter import messagebox
 from datetime import datetime, timezone, timedelta
 from enum import IntEnum
 from tkinter import ttk
@@ -10,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union, Optional
 
-from database import DBASE
+from database import DBASE, Pass, Session
 from fs_utils import read_antenna_info
 from utils import Config
 
@@ -40,6 +41,110 @@ class EventType(IntEnum):
 
 # Define Y information
 YH = namedtuple('YH', ['y', 'h'])
+
+
+def duration(td):
+    total_seconds = int(td)  # int(td.total_seconds())
+    hours, minutes = total_seconds // 3600, (total_seconds % 3600) // 60
+
+    return '{:02d}:{:02d}'.format(hours, minutes)
+
+class PASSViewer(tk.Toplevel):
+    def __init__(self, dashboard, config, satpass):
+        self.config, self.satpass = config, satpass
+        self.dashboard = dashboard
+
+        super().__init__(dashboard)
+
+        self.go_status = tk.BooleanVar(value=satpass.go)
+        self.save_it = None
+
+        self.title(f"{satpass.satellite.upper()} pass")
+        self.pass_area().pack(padx=5, pady=5, fill="x", expand=True, anchor='nw')
+        self.eph_area().pack(padx=5, pady=5, fill="x", expand=True, anchor='nw')
+        self.done_area().pack(padx=5, pady=5, fill="both", expand=True, anchor='sw')
+
+        self.update()
+
+    def pass_area(self):
+        frame = tk.LabelFrame(self, text=f"Pass", padx=5, pady=5)
+        self.add_entry(frame, 'Satellite', self.satpass.satellite.upper(), 0, 0, sticky="ew")
+        self.add_entry(frame, 'Start', self.satpass.start.strftime('%Y-%m-%d %H:%M:%S'), 0, 2, justify='center')
+        self.add_entry(frame, 'Stop', self.satpass.stop.strftime('%Y-%m-%d %H:%M:%S'), 0, 4, justify='center')
+        self.add_entry(frame, 'Duration', duration((self.satpass.stop-self.satpass.start).total_seconds()), 0, 6
+                       , justify='center', width=8)
+        checkbox = ttk.Checkbutton(frame, text="GO", compound=tk.TOP, variable=self.go_status,
+                                  command=self.go_nogo)
+        checkbox.grid(row=0, column=8, padx=5, pady=5, sticky='ew')
+
+        warning, fg = 'Use GO checkbox to change tracking status of this pass and click Save', 'black'
+        if self.satpass.triggered:
+            checkbox.config(state = tk.DISABLED)
+            warning, fg = 'Warning! Tracking of this pass is starting soon. No changes are allowed.', 'red'
+
+        tk.Label(frame, text=warning, justify='left', fg=fg).grid(row=1, column=0, columnspan=7, sticky='w')
+
+        self.save_it = ttk.Button(frame, text="Save", command=self.save)
+        self.save_it.config(state=tk.DISABLED)
+        self.save_it.grid(row=1, column=8, padx=5, pady=5, sticky='e')
+
+        frame.columnconfigure(1, weight=1)
+        return frame
+
+    def eph_area(self):
+        exp, scan_name = self.satpass.get_exp_scan(self.config)
+
+        frame = tk.LabelFrame(self, text=f"Ephemeris", padx=5, pady=5)
+        self.add_entry(frame, 'File', f"{self.satpass.name}.eph", 0, 0, width=25, sticky="ew")
+        self.add_entry(frame, 'Exp Name', exp, 0, 2, sticky="w", width=15)
+        self.add_entry(frame, 'Scan Name', scan_name, 0, 4, sticky="w", width=15)
+        self.add_entry(frame, 'Points', str(self.satpass.nbr_points), 0, 6, sticky="w", width=8)
+        self.add_entry(frame, 'Valid Points', str(int(self.satpass.nbr_points*self.satpass.possible)),
+                       0, 8, sticky="w", width=8)
+        frame.columnconfigure(1, weight=1)
+        return frame
+
+    def done(self):
+        if self.satpass.go != self.go_status.get():
+            rsp = messagebox.askokcancel("", "Changes not saved!\nDo you want to terminate?")
+            print('Ok/Cancel', rsp)
+            if not rsp:
+                return
+        print('Destroy wnd')
+        self.destroy()
+
+    def done_area(self):
+        frame = tk.Frame(self, borderwidth = 0, highlightthickness = 0)  #, padding=(0, 5, 0, 5))
+        ttk.Button(frame, text="Done", command=self.done).pack(side='bottom')
+        return frame
+
+    def add_entry(self, parent, label, text, row, col, justify='left', width=None, sticky=None):
+        ttk.Label(parent, text=label).grid(row=row, column=col)  #, style="LLabel.TLabel"
+        entry_var = tk.StringVar(master=self, value=text)
+        entry = tk.Entry(parent, textvariable=entry_var, state=tk.DISABLED, justify=justify, width=width)
+        entry.configure(disabledbackground="white", disabledforeground="black")
+        entry.grid(row=row, column=col+1, padx=5, pady=5, sticky=sticky)
+
+    def refresh(self, title, message, icon=None):
+
+        print('refresh')
+        self.wm_attributes("-topmost", True)
+        self.focus()
+        self.wm_attributes("-topmost", False)
+
+    def go_nogo(self):
+        state = tk.DISABLED if self.satpass.go == self.go_status.get() else tk.NORMAL
+        self.save_it.config(state=state)
+
+    def save(self):
+        # Update Database
+        with DBASE(self.config.DataBase.url) as dbase:
+            rec = dbase.get(Pass, id=self.satpass.id)
+            rec.go = self.satpass.go = self.go_status.get()
+            dbase.commit()
+        self.save_it.config(state=tk.DISABLED)
+        # Update Timeline and events
+        self.dashboard.refresh_event(self.satpass, timeline=True)
 
 
 class TimeLine(tk.Frame):
@@ -85,27 +190,26 @@ class TimeLine(tk.Frame):
             fig = OpsFigure(code, start, 86400, label, '#a8d5e5', 'black', 2, 'black', 10)
             self.add_figure(0, 'date', fig)
 
-    def add_session(self, ses):
-        if ses.master == 'intensive':
-            fig = OpsFigure(ses.code, ses.start, ses.duration, '', 'red', 'black', 1, 'white', 12
-                            , ses.triggered, False)
-            self.add_figure(1, 'intensive', fig)
-            return
+    def add_session(self, ses, config):
+        fill = 'red' if ses.master == 'intensive' else 'green'
         triggered = False if ses.pre else ses.triggered
-        fig = OpsFigure(ses.code, ses.start, ses.duration, ses.code.upper(), 'green', 'black', 1, 'white', 12,
+        label = ses.code.upper() if ses.master != 'intensive' else ''
+        fig = OpsFigure(ses.code, ses.start, ses.duration, label, fill, 'black', 1, 'white', 12,
                         triggered=triggered, top=False)
-        self.add_figure(1, 'standard', fig)
+        self.add_figure(1, 'intensive' if ses.is_intensive else 'standard', fig)
         if ses.pre:
-            start = ses.start - timedelta(seconds=1800)
-            fig = OpsFigure(ses.code, start, 1800, '', 'orange', 'black', 1, 'white', 12, ses.triggered, False)
+            dt = config.PreCheck.min_time * 60
+            start = ses.start - timedelta(seconds=dt)
+            fig = OpsFigure(ses.code, start, dt, '', 'orange', 'black', 1, 'white', 12, ses.triggered, False)
             self.add_figure(1, 'pre-obs', fig)
         if ses.post:
+            dt = config.PostCheck.min_time * 60
             start = ses.start + timedelta(seconds=ses.duration)
-            fig = OpsFigure(ses.code, start, 1800, '', 'orange', 'black', 1, 'white', 12)
+            fig = OpsFigure(ses.code, start, dt, '', 'orange', 'black', 1, 'white', 12)
             self.add_figure(1, 'post-obs', fig)
 
     def add_satpass(self, satpass):
-        fig = OpsFigure(f"{satpass.name}", satpass.start, satpass.duration, '',
+        fig = OpsFigure(f"{satpass.code}", satpass.start, satpass.duration, '',
                         'blue' if satpass.go else 'skyblue', 'black', 0, 'white', 12, satpass.triggered, True)
         self.add_figure(1, 'pass', fig)
 
@@ -115,9 +219,7 @@ class TimeLine(tk.Frame):
 
     def add_figure(self, row: int, tag: str, fig: OpsFigure):
 
-        #row, tag = self.types[event.type]['row'], self.types[event.type]['tag']
-        key = f"{fig.code}-{tag}"
-        if key in self.codes:
+        if (key := f"{fig.code}-{tag}") in self.codes:
             return
 
         dt = fig.start.timestamp() - self.T0
@@ -138,16 +240,16 @@ class TimeLine(tk.Frame):
             y2 = y1 + dy
             points = [x1, y1, x1 + delta, y2, x1 - delta, y2]
             self.canvas.create_polygon(points, fill="red")
-            print('triggers', fig.label, points)
 
         if row > 0:
-            self.canvas.tag_bind(fig.code, "<Double-Button-1>", self.double_clicked)
+            self.canvas.tag_bind(fig.code, "<Double-Button-1>", self.on_double_clicked)
+            self.canvas.tag_bind(fig.code, "<1>", self.on_clicked)
         self.codes.add(key)
 
     def order_events(self):
         #self.canvas.tag_raise('standard')
         self.canvas.tag_raise('intensive')
-        self.canvas.tag_raise('sat')
+        self.canvas.tag_raise('pass')
         self.canvas.tag_raise('text')
 
     def clean_canvas(self):
@@ -155,39 +257,50 @@ class TimeLine(tk.Frame):
         events = list(self.canvas.find_all())
         for event in events:
             if (bounds := self.canvas.bbox(event)) and (bounds[2] < 0):
-                tags = self.canvas.gettags(event)
-                key = f"{tags[0]}-{tags[1]}"
-                if key in self.codes:
-                    self.codes.remove(key)
-                self.canvas.delete(event)
+                if tags := self.canvas.gettags(event):
+                    if (key := f"{tags[0]}-{tags[1]}") in self.codes:
+                        self.codes.remove(key)
+                    self.canvas.delete(event)
 
     def refresh(self):
         t0, _ = self.offset()
         offset, self.T0 = (self.T0 - t0) * self.width / 86400, t0
 
-        self.canvas.move('fig', offset, 0)
-        self.canvas.move('text', offset, 0)
+        try:
+            self.canvas.move('fig', offset, 0)
+            self.canvas.move('text', offset, 0)
 
-        self.order_events()
-        self.canvas.update()
-        self.clean_canvas()
-        self.add_dates()
+            self.order_events()
+            self.canvas.update()
+            self.clean_canvas()
+            self.add_dates()
+        except tk.TclError:
+            pass
 
-    def double_clicked(self, event):
+    def refresh_pass(self, satpass):
+        events = list(self.canvas.find_all())
+        for event in events:
+            if tags := self.canvas.gettags(event):
+                if satpass.code == tags[0]:
+                    self.canvas.itemconfig(event, fill='blue' if satpass.go else 'skyblue')
+
+    def get_code(self, event):
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         if items := self.canvas.find_overlapping(x-1, y-1, x+1, y+1):
+            print('ITEMS', items)
             elements = {item: self.canvas.gettags(item) for item in items}
-            item = min(elements, key=lambda k: self.order.get(elements[k][1], 4))
-            print('OVER', elements)
-            print("FOUND", item, elements[item])
-            self.callback(elements[item])
-            #if items := self.canvas.find_closest(x, y):
-            #print('DC', items)
-            #for item in items:
-            #    if (tags := self.canvas.gettags(item)) and len(tags) > 2:
-            #        if tags[2] == 'fig':
-            #            self.callback(tags)
-            #            break
+            print('ELEMENTS', elements)
+            if item := min(elements, key=lambda k: self.order.get(elements[k][1], 4)):
+                return elements[item][0]
+        return None
+
+    def on_clicked(self, event):
+        if code := self.get_code(event):
+            self.callback(code, False)
+
+    def on_double_clicked(self, event):
+        if code := self.get_code(event):
+            self.callback(code, True)
 
 
 class DashBoard(tk.Tk):
@@ -215,14 +328,16 @@ class DashBoard(tk.Tk):
     def refresh_timeline(self):
         with DBASE(self.config.DataBase.url) as dbase:
             self.sessions = {ses.code: ses for ses in dbase.get_next_sessions(days=15)}
-            for session in self.sessions.values():
-                self.time_line.add_session(session)
-                self.add_session(session)
-            self.passes = {s.name: s for s in dbase.get_next_passes(days=5)}
-            for satpass in self.passes.values():
-                self.time_line.add_satpass(satpass)
+            self.passes = {s.code: s for s in dbase.get_next_passes(days=5)}
 
-        self.after(60000, self.refresh_timeline)
+        for session in self.sessions.values():
+            config = self.config.Intensive if session.is_intensive else self.config.Standard
+            self.time_line.add_session(session, config)
+        for satpass in self.passes.values():
+            self.time_line.add_satpass(satpass)
+        self.update_events()
+
+        self.after(60000, self.refresh_timeline)  # Refresh every minutes
 
     def goto_top(self, sig_num, frame):
         self.wm_attributes('-topmost', True)
@@ -230,14 +345,13 @@ class DashBoard(tk.Tk):
     def refresh(self, sig_num, frame):
         pass
 
-    def double_clicked(self, tags):
-        print('Double clicked', tags)
-        if tags[1] == 'pass':
-            print(self.passes.get(tags[0], f'{tags[0]} unknown'))
-        elif ses := self.sessions.get(tags[0]):
-            print(ses)
-        else:
-            print(f"{tags[0]} {tags[1]} unknown")
+    def show_record_information(self, code, show):
+        self.events.selection_set(code)
+        if show:
+            if record := self.passes.get(code):
+                PASSViewer(self, self.config, record)
+            elif False: #record := self.sessions.get(code):
+                messagebox.showinfo('Session', str(record))
 
     def done(self):
         sys.exit()
@@ -274,20 +388,19 @@ class DashBoard(tk.Tk):
         upcoming.grid(row=2, column=7, columnspan=6, padx=5)  #, padx=10, pady=5
         frame.columnconfigure(15, weight=1)
 
-        self.time_line = TimeLine(frame, utc.winfo_reqheight(), 0, 16, self.double_clicked)
+        self.time_line = TimeLine(frame, utc.winfo_reqheight(), 0, 16, self.show_record_information)
         #for col in range(3):
         #    frame.columnconfigure(col, uniform='a')
         frame.pack(expand=tk.NO, fill=tk.BOTH)
         return frame
 
     def init_treeview(self, main_frame):
-        header = {'Event': (100, tk.W, tk.NO), 'Description': (300, tk.W, tk.YES), 'Start': (100, tk.CENTER, tk.NO),
-                  'Duration': (150, tk.CENTER, tk.NO), 'Conflict': (100, tk.E, tk.NO), 'Status': (100, tk.W, tk.NO)}
+        header = {'Event': (150, tk.W, tk.NO), 'Description': (200, tk.W, tk.YES), 'Start': (150, tk.CENTER, tk.NO),
+                  'Duration': (150, tk.CENTER, tk.NO), 'Conflict': (100, tk.W, tk.NO), 'Status': (100, tk.W, tk.NO)}
         width, height = sum([info[0] for info in header.values()]), 150
         frame = tk.Frame(main_frame, height=height, width=width+20)
         # Add a Treeview widget
-        self.events = ttk.Treeview(frame, columns=list(header.keys()), show='headings', height=5, style='W.Treeview')
-        #self.events = ttk.Treeview(frame, show='headings', height=5, style='W.Treeview')
+        self.events = ttk.Treeview(frame, columns=list(header.keys()), show='headings', height=5)
         self.events.place(width=width, height=height)
 
         vsb = ttk.Scrollbar(frame, orient="vertical", command=self.events.yview)
@@ -299,6 +412,8 @@ class DashBoard(tk.Tk):
         for col, (key, info) in enumerate(header.items(), 0):
             self.events.column(f"{col}", anchor=info[1], minwidth=0, width=info[0], stretch=info[2])
             self.events.heading(f"{col}", text=key)
+
+        self.events.bind("<Double-1>", self.on_double_clicked)
 
         #for sta in self.session.network:
         #    self.stations.insert('', 'end', sta.capitalize(), values=(sta.capitalize(), 'None', 'N/A'), tags=('all',))
@@ -321,28 +436,60 @@ class DashBoard(tk.Tk):
         frame.pack(side=tk.BOTTOM, expand=tk.NO, fill=tk.BOTH)
         return frame
 
-    def add_session(self, session):
-        def duration(td):
-            total_seconds = int(td)  # int(td.total_seconds())
-            hours, minutes = total_seconds // 3600, (total_seconds % 3600) // 60
+    def refresh_event(self, event, timeline=False):
+        sessions = [ses for ses in self.sessions.values() if ses.code != event.code]
+        if event.is_pass:
+            description = f"{event.satellite} tracking"
+            status = 'GO' if event.go else 'NO GO'
 
-            return '{}:{:02d}'.format(hours, minutes)
+        else:
+            description = f"{event.master.capitalize()} {event.type}"
+            config = self.config.Intensive if event.is_intensive else self.config.Standard
+            status = 'auto' if config.auto else 'manual'
 
-        code, description = session.code, f"{session.master.capitalize()} {session.type}"
+        start, hm = event.start.strftime("%Y-%m-%d %H:%M"), duration(event.duration)
+        name = event.satellite if event.is_pass else event.code.upper()
 
-        if session.end < datetime.now(tz=timezone.utc).replace(tzinfo=None):
-            if self.events.exists(code):
-                self.events.delete(code)
-            return
+        inside = ''
+        if event.is_pass or event.is_intensive:
+            for ses in sessions:
+                if event.intersecting(ses):
+                    inside = ses.code.upper()
+                    break
+        vals = (name, description, start, hm, inside, status)
 
-        start, hm = session.start.strftime("%Y-%m-%d %H:%M"), duration(session.duration)
-        if not self.events.exists(code):
-            self.events.insert('', 'end', code, values=(code.upper(), description, start, hm, 'None', 'Yes'),
-                               tags=('all',))
+        self.events.item(event.code, values=vals)
+        if timeline:
+            self.time_line.refresh_pass(event)
 
-        #self.stations.set(sta_id, col, text)
-        #if tags:
-        #    self.stations.item(sta_id, tags=tags)
+    def update_events(self):
+        events = sorted([*list(self.sessions.values()), *list(self.passes.values())], key=lambda item: item.start)
+        for index, event in enumerate(events):
+            code = event.code
+            if event.end < datetime.now(tz=timezone.utc).replace(tzinfo=None):
+                if self.events.exists(code):
+                    self.events.delete(code)
+                continue
+            if not self.events.exists(code):
+                for item in events[index + 1:]:
+                    try:
+                        if self.events.exists(item.code) and item.start > event.start:
+                            self.events.insert('', self.events.index(item), code, values=("", ""), tags=('all',))
+                            break
+                    except tk.TclError as err:
+                        print(f'Insert {str(err)}')
+                        print(f'Index {index} item {item.code} {self.events.item(item.code)}')
+                else:  # Add at end of list
+                    self.events.insert('', 'end', code, values=("", ""), tags=('all',))
+            self.refresh_event(event)
+
+    def on_double_clicked(self, event):
+        print('EVENT', event)
+        code = self.events.identify_row(event.y)
+        self.show_record_information(code, True)
+
+    def clean_tree(self):
+        pass
 
     def next_event(self, utc, sec, fnc):
         t = int(utc.timestamp() + sec)
@@ -370,7 +517,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='AutoFS dashboard')
 
     parser.add_argument('-c', '--config', help='config file',
-                        default='/usr2/control/_autofs.ctl', required=False)
+                        default='/usr2/control/autofs.ctl', required=False)
 
     args = parser.parse_args()
 

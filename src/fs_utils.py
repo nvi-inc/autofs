@@ -118,24 +118,25 @@ class Scan:
     def __init__(self, name, line_nbr):
 
         self.name, self.line_nbr = name, line_nbr
-        self.pre = self.stop = self.azel = None
-        self.keyword = None
+        self.timestamp = self.pre = self.start = self.stop = None
+        self.azel = None
         self.records = []
 
     def add(self, line):
+        self.records.append(line)
         if found := is_wait(line):
-            timestamp = fs2time(found['time'])
+            self.timestamp = fs2time(found['time'])
             if not self.pre:
-                self.pre = timestamp
-            else:
-                self.keyword = line
-                self.stop, self.records = timestamp, []
-        else:
-            self.records.append(line)
+                self.pre = self.timestamp
+            self.records = [line]
+        elif "data_valid=on" in line:
+            self.start = self.timestamp
+        elif "data_valid=off" in line:
+            self.stop = self.timestamp
 
     def __str__(self):
         if self.pre:
-            return f"{self.name:10s} {self.line_nbr:6d} {self.azel} {time2fs(self.pre)} {time2fs(self.stop)} {self.records}"
+            return f"{self.name:10s} {self.line_nbr:6d} {time2fs(self.pre)} {time2fs(self.stop)} {self.records}"
         return f"{self.name:10s} {self.line_nbr:6d} {self.records}"
 
 
@@ -176,23 +177,20 @@ class SnapFile:
     def get_scan_before(self, timestamp: float) -> Optional[Scan]:
         previous = None
         for name, scan in self.scans.items():
-            if scan.stop > timestamp:
-                modified = deepcopy(previous)
-                modified.records.insert(0, "halt")
-                modified.records.insert(1, f"!{time2fs(modified.stop)}")
-                return modified
+            if scan.stop > timestamp and previous:
+                return deepcopy(previous)
             previous = scan
         return None
 
     def get_scan_after(self, timestamp: float) -> Scan:
         for name, scan in self.scans.items():
             if scan.pre > timestamp:
-                modified = deepcopy(scan)
+                found = deepcopy(scan)
                 break
         else:
-            modified = deepcopy(self.sched_end)
-        modified.records = [f"schedule={self.path.stem},#{modified.line_nbr}"]
-        return modified
+            found = deepcopy(self.sched_end)
+        found.records = [f"schedule={self.path.stem},#{found.line_nbr}"]
+        return found
 
     def get_missed_scans(self, first: str, last: str):
         scans = list(self.scans.keys())

@@ -104,7 +104,7 @@ class FSBridge:
         with Client(self.host, self.port) as client:
             for command in commands:
                 ans = client.query({"action": "inject", "command": command})
-                logger.info(f"inject {command}/{ans}")
+                logger.info(f"inject {command}/{'ok' if ans.get('fs', False) else 'failed'}")
 
 if __name__ == "__main__":
     import argparse

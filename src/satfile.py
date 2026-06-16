@@ -3,15 +3,12 @@ import sys
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List
 
 from utils import Config
-from fs_utils import read_antenna_info, Mask
+from fs_utils import read_antenna_info, Mask, Antenna
 from vcc_utils import get_file
 from database import DBASE, History, AER
-
-
-
-
 
 
 # usage
@@ -28,23 +25,55 @@ class SatFileInfo:
         self.satellite, self.station, self.start, *_ = self.filename.split('_')
         self.version = self.created = None
         self.passes, self.tle = [], []
+        self.antenna = read_antenna_info()
 
+        lolim, uplim = self.antenna.lolim1, self.antenna.uplim1
+        if lolim < 0:
+            lolim, uplim = lolim + 3600, uplim + 360.0
+        self.ccw = (lolim, lolim + 180.0)
+        self.cw = (uplim - 180.0, uplim)
 
     def __str__(self):
         lines = [f"{self.satellite}-{self.station} V{self.version} created {self.created}"]
         lines.extend([f"PASS {i:3d} {t0} {t1}" for i, (t0, t1) in enumerate(self.passes)])
         return "\n".join(lines)
 
-    def add_pass(self, start, stop, aer):
-        # Check if ascending arc
+    def add_pass(self, start: datetime, stop: datetime, aer: List[AER]) -> None:
+        # Check if clockwise by finding 3 records in same direction (in case it cross 360).
+        if len(aer) < 50:
+            logger.warning(f"pass {start} too short. Only {len(aer)} points")
+            return
         for index in range(5):
             if aer[index].azimuth > aer[index+1].azimuth > aer[index+2].azimuth:
-                self.passes.append((start, stop, True, aer))
-                return
-            if aer[index].azimuth < aer[index+1].azimuth < aer[index+ 2].azimuth:
-                self.passes.append((start, stop, False, aer))
-                return
-        logger.error(f'Cannot find direction of pass {start} {stop}')
+                clockwise = False
+                break
+            if aer[index].azimuth < aer[index+1].azimuth < aer[index+2].azimuth:
+                clockwise = True
+                break
+        else:
+            logger.error(f'Cannot find direction of pass {start} {stop}')
+            return
+        wrap = self.get_wrap(aer[0].azimuth, aer[-1].azimuth, clockwise)
+        self.passes.append((start, stop, wrap, aer))
+
+    def get_wrap(self, az1: float, az2: float, clockwise: bool) -> str:
+        nbr, reminder = divmod(int(self.cw[1]), 360)
+        nwrap = nbr + 1 if reminder else nbr
+
+        if clockwise:
+            if self.ccw[0] < az1 < self.ccw[1]:
+                return 'ccw'
+            else:
+                for i in range(nwrap):
+                    if az1 + i * 360 > self.cw[0]:
+                        daz = az2 - az1 if az2 > az1 else 360 + az1 - az2
+                        return 'cw' if az1 + i * 360 + daz < self.cw[0] else 'ccw'
+        else:
+            for i in range(nwrap):
+                if self.cw[0] < az1 + i * 360 < self.cw[1]:
+                    return 'cw'
+
+        return 'neutral'
 
     def process(self, content):
         passes, aer_values = [], []
@@ -65,6 +94,9 @@ class SatFileInfo:
             t, az, el, r = line.strip().split()
             aer_values.append(AER(datetime.fromisoformat(t), float(az), float(el), float(r)))
 
+        def clean(text):
+            return '$TLE' if text.startswith('$TLE') else text.strip()
+
         decoders = {'$FORMAT_VERSION': decode_version, '$CREATION_DATE': decode_creation,
                     '$STATION_NAME': decode_station, '$PASSES': decode_passes, '$TLE': decode_tle,
                     '$AER_VALUES': decode_aer}
@@ -75,7 +107,7 @@ class SatFileInfo:
             if line.startswith('*'):
                 continue
             if line.startswith('$'):
-                decode = decoders.get(line.strip(), do_not_use)
+                decode = decoders.get(clean(line), do_not_use)
             else:
                 decode()
 
@@ -89,18 +121,21 @@ class SatFileInfo:
             records.append(rec)
         self.add_pass(start, stop, records)
 
-    def save_tle(self, folder: str):
-        logger.info(f'saving tle into {folder=}')
-        with open(Path(folder, f"{self.satellite.lower()}.tle"), 'w') as tle:
-            tle.write("\n".join(self.tle))
+    def save_tle(self, folder: [Path, str]):
+        if self.tle:
+            logger.info(f'saving tle into {folder=}')
+            with open(Path(folder, f"{self.satellite.lower()}.tle"), 'w') as tle:
+                tle.write("\n".join(self.tle))
 
-    def save(self, dbase:DBASE, mask: Mask):
-        dbase.save_tle(self.satellite, self.tle)
-        for (start, stop, ascending, aer) in sorted(self.passes):
+    def save(self, dbase:DBASE, antenna: Antenna, eph_folder: [Path, str]):
+        if self.tle:
+            dbase.save_tle(self.satellite, self.tle)
+        for (start, stop, wrap, aer) in sorted(self.passes):
             the_pass = dbase.get_pass(self.satellite, start, create=True)
             logger.debug(f'updating database pass {the_pass.satellite}  {the_pass.id=}')
 
-            the_pass.update(start, stop, ascending, aer, mask)
+            the_pass.update(start, stop, wrap, aer, antenna.mask)
+            the_pass.save_ephemeris(eph_folder, aer)
 
 
 def end(reason: str):
@@ -127,9 +162,13 @@ def download(config: Config, file_path: str, redo=False):
             end(f"File {info.filename} not for {antenna.name}")
         # Decode information and save in database
         logger.info(f'processing {info.filename=}')
-        info.process(rsp.content.decode('utf-8'))
-        info.save_tle(config.Satellite.tle)
-        info.save(dbase, antenna.mask)
+        content = rsp.content.decode('utf-8')
+        satfile_path = Path(config.Folders.satfile) / f"{filename.split('.')[0]}.sat"
+        with open(satfile_path,'w') as wfile:
+            wfile.write(content)
+        info.process(content)
+        info.save_tle(config.Folders.tle)
+        info.save(dbase, antenna, config.Folders.ephemeris)
         if not redo:
             logger.debug(f'adding processed file to history')
             dbase.add(History(filename))

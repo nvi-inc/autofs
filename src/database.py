@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Any
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import create_engine, and_
 from sqlalchemy import TIMESTAMP, BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Integer, String
@@ -27,6 +30,10 @@ class AER:
 
     def __str__(self):
         return f"  {self.time.isoformat()} {self.azimuth:8.3f} {self.elevation:9.3f} {self.range_km:13.6f}"
+
+    def eph(self):
+        timestamp = self.time.replace(tzinfo=timezone.utc).timestamp()  #
+        return f"{timestamp:10.0f} {self.time.isoformat()} {self.azimuth:8.3f} {self.elevation:9.3f}"
 
 
 class Session(Base):
@@ -85,6 +92,10 @@ class Session(Base):
         return self.start + timedelta(seconds=self.duration)
 
     @property
+    def is_pass(self):
+        return False
+
+    @property
     def year(self):
         return self.start.strftime('%Y')
 
@@ -122,12 +133,10 @@ class Session(Base):
                 self.participating.append(ses_sta)
         self.included.sort()
 
-    def intersecting(self, std_ses: Any, delay: timedelta) -> bool:
-        start, end = self.start - delay, self.end + delay
-        if not any(start <= t <= end for t in (std_ses.start, std_ses.end)):
-            if not any(std_ses.start <= t <= std_ses.end for t in (start, end)):
-                return False
-        return True
+    def intersecting(self, std_ses: Session) -> bool:
+        if any(std_ses.start <= t <= std_ses.end for t in (self.start, self.end)):
+            return True
+        return False
 
 
 class SessionStation(Base):
@@ -188,7 +197,8 @@ class Pass(Base):
     first_elevation = Column('first_elevation', Float, default=0.0)
     last_azimuth = Column('last_azimuth', Float, default=180.0)
     last_elevation = Column('last_elevation', Float, default=90.0)
-    ascending = Column('ascending', Boolean, default=True)
+    wrap = Column('wrap', String(10), default='neutral')
+    nbr_points = Column('nbr_points', Integer, default=0)
     possible = Column('possible', Float, default=0.0)
     go = Column('go', Boolean, default=True)
     triggered = Column('triggered', Boolean, default=False)
@@ -203,6 +213,14 @@ class Pass(Base):
         return f"Pass({self.satellite.upper()},{self.start})"
 
     @property
+    def code(self):
+        return f"{self.satellite}-{self.id}".upper()
+
+    @property
+    def name(self):
+        return f"{self.satellite}-{self.start:%Y%m%d-%H%M%S}"
+
+    @property
     def duration(self) -> float:
         return (self.stop - self.start).total_seconds()
 
@@ -210,23 +228,41 @@ class Pass(Base):
     def end(self):
         return self.stop
 
-    def update(self, start: datetime, stop: datetime, ascending: bool, aer: List[AER], mask: Mask) -> None:
+    @property
+    def is_pass(self):
+        return True
+
+    def get_exp_scan(self, config):
+        satname = self.satellite.upper()
+        nickname = getattr(config.Satellite.NickName, satname, satname[:4])
+        ydoy = self.start.strftime("%Y%j")[-4:]
+        exp = f"{nickname}{ydoy}".lower()
+        scan_name = f"{ydoy}-{self.start:%H%M%S}"
+        return exp, scan_name
+
+
+    def update(self, start: datetime, stop: datetime, wrap: str, aer: List[AER], mask: Mask) -> None:
         logger.debug(f'updating {self.id=} {self.satellite=}')
-        first, last, possible = None, None, 0
-        self.start, self.stop, self.ascending = start, stop, ascending
+        self.start, self.stop, self.wrap = start, stop, wrap
         if aer:
+            first, last = aer[0], aer[-1]
+            self.first_azimuth, self.first_elevation = first.azimuth, first.elevation
+            self.last_azimuth, self.last_elevation = last.azimuth, last.elevation
+            possible = 0
             for pos in aer:
                 if mask.is_over(pos.azimuth, pos.elevation):
                     possible += 1
-                    if first is None:
-                        first = pos
-                    last = pos
-            self.start, self.stop = first.time, last.time
-            self.first_azimuth, self.first_elevation = first.azimuth, first.elevation
-            self.last_azimuth, self.last_elevation = last.azimuth, last.elevation
+            self.nbr_points = len(aer)
             self.possible = possible / len(aer)
 
-    def intersecting(self, session: Session, buffer: timedelta) -> bool:
+    def save_ephemeris(self, folder: [Path, str], aer: List[AER]):
+        path = Path(folder, f"{self.name}.eph")
+        with open(path, 'w') as f:
+            for record in aer:
+                print(record.eph(), file=f)
+
+    def intersecting(self, session: Session, buffer: timedelta=None) -> bool:
+        buffer = buffer or timedelta(minutes=0)
         sat_start, sat_end = self.start - buffer, self.end + buffer
         if not any(sat_start <= t <= sat_end for t in (session.start, session.end)):
             if not any(session.start <= t <= session.end for t in (sat_start, sat_end)):
@@ -245,10 +281,6 @@ class Pass(Base):
                 logger.info(f'{self.satellite} {self.id} pass is no-go. too close to \
                     {session.code=} ')
                 self.go = False
-
-    @property
-    def name(self):
-        return f"{self.satellite}-{self.id}".upper()
 
 
 # Class to manage satellite pass data

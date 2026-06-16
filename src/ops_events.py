@@ -7,6 +7,14 @@ from typing import Callable, Optional, List
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
+from traceback import format_exc
+
+import logging
+from logger import setup_logging
+setup_logging("/usr2/autofs/logger.yaml")
+logger=logging.getLogger('autofs')
+
+logger.debug('module call')
 
 class FileWatcher(Observer):
     class Handler(FileSystemEventHandler):
@@ -32,7 +40,10 @@ class RepeatFunction(Thread):
 
     def exec(self):
         t0 = time.time()
-        self.fnc()
+        try:
+            self.fnc()
+        except:
+            logger.error(format_exc())
         dt = time.time() - t0
         return self.interval - dt if dt < self.interval else self.interval
 

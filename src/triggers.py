@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from threading import Thread, Event, Lock
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass
@@ -20,27 +22,31 @@ class Manager(Thread):
         self.bridge, self.logger = bridge, logger
         self.log_folder, self.active_log = log_folder, Path(log_folder, 'station.log')
         self.log = open(self.active_log, 'r', encoding="utf8", errors="ignore")
-        self.last_times, self.triggers = {}, {}
+        self.last_times, self.triggers, self.keywords = {}, {}, {}
         self.mutex = Lock()
 
     def log_it(self, text, warning=False):
         if self.logger:
             self.logger.warning(text) if warning else self.logger.info(text)
 
-    def add_trigger(self, key, trigger):
+    def add_trigger(self, trigger: Trigger):
         with self.mutex:
-            if key not in self.triggers:
-                self.log_it(f"adding triggers for {key}")
-                self.triggers[key] = trigger
+            key = trigger.key
+            action = 'modifying' if key in self.triggers else 'adding'
+            self.log_it(f"{action} triggers for {key}")
+            self.triggers[key] = trigger
+            self.keywords = {t.keyword: t for t in self.triggers.values() if t.keyword}
 
-    def remove_trigger(self, key):
+    def remove_trigger(self, key: str):
         with self.mutex:
-            self.triggers.pop(key)
+            if key in self.triggers:
+                self.triggers.pop(key)
+                self.keywords = {t.keyword: t for t in self.triggers.values() if t.keyword}
 
     # Remove all triggers
     def reset_triggers(self):
         with self.mutex:
-            self.triggers = {}
+            self.triggers, self.keywords = {}, {}
             self.log_it("manager cleared all triggers", warning=True)
 
     # Close the log file
@@ -75,7 +81,7 @@ class Manager(Thread):
                     self.log_it(f"remove expired trigger {key} {trigger.expiring}")
                     self.triggers.pop(key)
             for key, trigger in expired:
-                trigger.callback(key, trigger.data)
+                trigger.callback(trigger)
 
     def log_inactive(self, sched, inactivity=600):
         log_name = f"{sched}.log"
@@ -96,20 +102,19 @@ class Manager(Thread):
                 continue
             else:
                 path =Path(self.log_folder, self.bridge.get_ddout_log())
-                wait_time = 0.1
                 last_time = self.open_log(path)
                 for line in self.log:
-                    if (rec := is_fs_rec(line)) and (timestamp := fs2time(rec['time'])) > last_time:
+                    if (rec := is_fs_rec(line)) and (timestamp := fs2time(rec['time'])) >= last_time:
                         last_time, data = timestamp, rec['data']
                         with self.mutex:
-                            triggers = [(k, t) for (k, t) in self.triggers.items() if t.keyword and t.keyword in data]
+                            triggers = [t for keyword, t in self.keywords.items() if keyword in data]
                             for key, trigger in triggers:
-                                if trigger.remove:
-                                    self.log_it(f"remove trigger {key} {trigger.keyword}")
-                                    self.triggers.pop(key)
-                        for key, trigger in triggers:
-                            trigger.callback(trigger.name, trigger.data)
+                                self.log_it(f"remove trigger {key} {trigger.keyword}")
+                                self.triggers.pop(key)
+                        for trigger in triggers:
+                            trigger.callback(trigger)
                 self.last_times[self.active_log.name] = last_time
+                wait_time = 0.1
         timer.join(timeout=2)
         self.close_log()
 
@@ -122,8 +127,8 @@ class Trigger:
     """
     Class used to trigger event when a specific string is found in log or time is expired.
     """
-    name:str
-    callback: Callable[[str, dict], None]
+    key:str
+    callback: Callable[[Trigger], None]
     keyword: Optional[str] = None
     data: Optional[dict] = None
     remove: bool = True
@@ -134,7 +139,7 @@ class Trigger:
 
     def __repr__(self):
         expiring = datetime.fromtimestamp(self.expiring).isoformat()
-        return f"{self.name} {self.callback.__name__} {self.keyword} {expiring} {self.data}"
+        return f"{self.key} {self.callback.__name__} {self.keyword} {expiring} {self.data}"
 
     def expired(self, now = datetime.now(tz=timezone.utc).timestamp()):
         return  now >= self.expiring
