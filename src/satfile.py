@@ -86,7 +86,7 @@ class SatFileInfo:
         def decode_station():
             self.station = line.strip().upper()
         def decode_passes():
-            record = [datetime.fromisoformat(s) for s in line.strip().split()]
+            record = [datetime.fromisoformat(s) for s in line.strip().split()[:2]]
             passes.append(record)
         def decode_tle():
             self.tle.append(line)
@@ -144,7 +144,7 @@ def end(reason: str):
 
 
 # Download SatFile from VCC and store information in sqlite database
-def download(config: Config, file_path: str, redo=False):
+def download(config: Config, file_path: str, redo=False, manual= False):
     logger.info(f'Downloading {file_path=}')
     antenna = read_antenna_info()
     filename = Path(file_path).name
@@ -154,15 +154,22 @@ def download(config: Config, file_path: str, redo=False):
         if dbase.get(History, filename=filename) and not redo:
             end(f"{filename} already processed")
         # Retrieve file from VCC
-        if not (rsp := get_file(config.VCC.config, file_path)):
-            end('Invalid response from VCC')
-        if not (found := re.match(r'.*filename=\"(?P<name>.*)\".*', rsp.headers['content-disposition'])):
-            end('No station name in response from VCC')
+        if not manual:
+            if not (rsp := get_file(config.VCC.config, file_path)):
+                end('Invalid response from VCC')
+            if not (found := re.match(r'.*filename=\"(?P<name>.*)\".*', rsp.headers['content-disposition'])):
+                end('No station name in response from VCC')
+        else:
+            found = {'name':filename}
         if (info := SatFileInfo(found['name'])).station != antenna.name:
             end(f"File {info.filename} not for {antenna.name}")
         # Decode information and save in database
         logger.info(f'processing {info.filename=}')
-        content = rsp.content.decode('utf-8')
+        if not manual:
+            content = rsp.content.decode('utf-8')
+        else:
+            with open(file_path, 'r') as rfile:
+                content = rfile.read()
         satfile_path = Path(config.Folders.satfile) / f"{filename.split('.')[0]}.sat"
         with open(satfile_path,'w') as wfile:
             wfile.write(content)
@@ -181,15 +188,16 @@ def download(config: Config, file_path: str, redo=False):
 if __name__ == '__main__':
     import argparse
     from traceback import format_exc
-    parser = argparse.ArgumentParser(description='Process satellite files from VCC')
-    parser.add_argument('-c', '--config', help='config file',
-                        default='/usr2/control/_autofs.ctl', required=False)
-    parser.add_argument('--redo', action="store_true")
+    parser = argparse.ArgumentParser(description='Process satellite files')
+    parser.add_argument('-c', '--config', help='config file. a default value is provided',
+                        default='/usr2/control/autofs.ctl', required=False)
+    parser.add_argument('--redo', action="store_true", help='reprocess previously processed satfile')
+    parser.add_argument('--manual', action="store_true", help='process satfile from local path')
     parser.add_argument('path')
     args = parser.parse_args()
 
     try:
-        download(Config(args.config), args.path, redo=args.redo)
+        download(Config(args.config), args.path, redo=args.redo, manual= args.manual)
     except SystemExit:
         pass
     except:

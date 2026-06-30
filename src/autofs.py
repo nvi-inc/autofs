@@ -241,8 +241,8 @@ class AutoFS:
         experiment, scan_name = satpass.get_exp_scan(self.config)
         start_time, duration = satpass.start.strftime('%Yy%jd%Hh%Mm%Ss'), satpass.duration
         file_size = duration * 1 # 1 GB/s to be determined
-        cmd = f"record={start_time}:{duration}:{file_size}:{scan_name}:{experiment}:{self.code.lower()}"
-        return f'gritss_mk6cm={cmd}'
+        cmd = f"record={start_time}:{int(duration)}:{int(file_size)}:{scan_name}:{experiment}:{self.code.lower()}"
+        return f'gritss_mk6={cmd}'
 
     def execute(self, processes: List[List[str]]):
         for process in processes:
@@ -268,7 +268,7 @@ class AutoFS:
         key = f"{satpass.code}-STOP"
         self.logger.info(f'TRIGGER {key}')
         data = {'commands': self.config.Satellite.Procedures.Post.snaps}
-        trigger = Trigger(key, self.exec_trigger, data=data, expiring=satpass.stop.timestamp())
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=satpass.stop.timestamp() + 10) # 10 seconds after the end
         self.logger.debug(trigger)
         if 'manager' in self.threads:
             self.threads['manager'].add_trigger(trigger)
@@ -323,9 +323,7 @@ class AutoFS:
         key = f"{satpass.code}-START"
         self.logger.info(f"TRIGGER {key} {session.code}")
         commands = add_sched_commands(self.config.Satellite.Procedures.Session.Pre.snaps, stop_scan, 'HALT_SCHED')
-        self.logger.debug(f"{key} {commands}")
         commands = self.add_sat_commands(commands, satpass)
-        self.logger.debug(f"{key} {commands}")
         # commands are injected into FS, processes are programs run 
         data = {'commands': commands}
         trigger = Trigger(key, self.exec_trigger, data=data, expiring=stop_scan.start + 10)
@@ -607,7 +605,7 @@ if __name__ == "__main__":
                 if session:
                     autofs.make_pass_in_session_trigger(satpass, session,testing=True)
                     autofs.event_satpass.reset()
-                    break
+                 #   break
                 elif (event_time := satpass.start ) > now:
                     autofs.make_pass_trigger(satpass)
                     autofs.event_satpass.reset()
