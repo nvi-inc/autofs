@@ -234,7 +234,10 @@ class Pass(Base):
 
     def get_exp_scan(self, config):
         satname = self.satellite.upper()
-        nickname = getattr(config.Satellite.NickName, satname, satname[:4])
+        # first two chars of satname as the exp name
+        # two chars is a limitation of old FS 
+        # ideally should be increased to 4 to avoid conflict
+        nickname = getattr(config.Satellite.NickName, satname, satname[:2])
         ydoy = self.start.strftime("%Y%j")[-4:]
         exp = f"{nickname}{ydoy}".lower()
         scan_name = f"{ydoy}-{self.start:%H%M%S}"

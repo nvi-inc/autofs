@@ -104,7 +104,9 @@ class SatFileInfo:
         # Read all lines
         decode = do_not_use
         for line in content.splitlines(keepends=False):
-            if line.startswith('*'):
+            if line.strip().startswith('*'):
+                continue
+            if line.strip() == '':
                 continue
             if line.startswith('$'):
                 decode = decoders.get(clean(line), do_not_use)
@@ -115,10 +117,16 @@ class SatFileInfo:
         (start, stop) = next(pass_iterator := iter(sorted(passes)))
         records = []
         for rec  in aer_values:
+            if rec.time < start:
+                continue
             if rec.time > stop:
                 self.add_pass(start, stop, records)
-                records, (start, stop) = [], next(pass_iterator)
-            records.append(rec)
+                try:
+                    records, (start, stop) = [], next(pass_iterator)
+                except StopIteration:
+                    break
+            if rec.time >= start and rec.time <= stop:
+                records.append(rec)
         self.add_pass(start, stop, records)
 
     def save_tle(self, folder: [Path, str]):

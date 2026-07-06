@@ -71,6 +71,7 @@ GRITSS = "GR"
 ISS = "IS"
 ISSFAKE = "IF"
 IRIDIUM = "IM"
+IRDFAKE = "DF"
 
 [Standard]
 auto = true 
