@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union, Optional
 
+from autofs import get_autofs_process
 from database import DBASE, Pass, Session
 from fs_utils import read_antenna_info
 from utils import Config
@@ -318,9 +319,11 @@ class DashBoard(tk.Tk):
         signal.signal(signal.SIGUSR2, self.refresh)
 
         self.sessions, self.passes, self.events = {}, {}, None
-        self.utc, self.upcoming_event, self.time_line = tk.StringVar(), tk.StringVar(), None
+        self.utc, self.autofs_field, self.autofs_status = tk.StringVar(), None, tk.StringVar()
+        self.event_field, self.event_text = None, tk.StringVar()
+        self.time_line = None
         self.init_wnd()
-        #self.update_event()
+        self.update_event()
         self.update_utc()
         self.refresh_timeline()
         self.mainloop()
@@ -380,15 +383,23 @@ class DashBoard(tk.Tk):
 
     def init_header(self, main_frame):
         frame = tk.LabelFrame(main_frame, text="Scheduled observations", padx=5, pady=5)
-        utc = tk.Label(frame, textvariable=self.utc, anchor='e')
-        utc.grid(row=2, column=15, sticky='e', padx=5)  #, padx=10, pady=5
-        next_label = tk.Label(frame, text='Next Event', anchor='w', justify='left')
-        next_label.grid(row=2, column=0, columnspan=6) # , padx=10, pady=5 , font=("TkFixedFont",)
-        upcoming = tk.Label(frame, textvariable=self.upcoming_event, anchor='w')
-        upcoming.grid(row=2, column=7, columnspan=6, padx=5)  #, padx=10, pady=5
-        frame.columnconfigure(15, weight=1)
 
-        self.time_line = TimeLine(frame, utc.winfo_reqheight(), 0, 16, self.show_record_information)
+        tk.Label(frame, text='Next Event:', anchor='w', justify='left').grid(row=2, column=0, sticky='w')  #, columnspan=6)
+        self.event_field = tk.Label(frame, textvariable=self.event_text, anchor='w', justify='left')
+        self.event_field.grid(row=2, column=1, columnspan=6, padx=5)  # 7, 6
+
+        #self.autofs_field = tk.Label(frame, textvariable=self.autofs_status, anchor='e')
+        #self.autofs_field.grid(row=2, column=8, sticky='e', padx=5)  # 15 , padx=10, pady=5
+
+        self.autofs_field = tk.Label(frame, textvariable=self.autofs_status, anchor='w', justify='left')
+        self.autofs_field.grid(row=3, column=0, columnspan=4, sticky='w')  # 15 , padx=10, pady=5
+
+        utc = tk.Label(frame, textvariable=self.utc, anchor='e')
+        utc.grid(row=2, column=8, sticky='e', padx=5)  #, padx=10, pady=5
+
+        frame.columnconfigure(8, weight=1)
+
+        self.time_line = TimeLine(frame, utc.winfo_reqheight(), 0, 9, self.show_record_information)
         #for col in range(3):
         #    frame.columnconfigure(col, uniform='a')
         frame.pack(expand=tk.NO, fill=tk.BOTH)
@@ -503,9 +514,53 @@ class DashBoard(tk.Tk):
         self.next_event(utc, 1, self.update_utc)
 
     def update_event(self):
-        utc = datetime.now(tz=timezone.utc) + timedelta(seconds=0.5)
-        self.upcoming_event.set(f"This is a test {utc}")
-        self.next_event(utc, 5, self.update_event)
+        def dt(delta):
+            if delta >= timedelta(hours=1):
+                hours = int(delta.total_seconds() // 3600)
+                return f"{hours} hour{'s' if hours > 1 else '' }"
+            if delta >= timedelta(minutes=1):
+                minutes = int(delta.total_seconds() // 60)
+                return f"{minutes} minute{'s' if minutes > 1 else ''}"
+            return f"{int(delta.total_seconds())} seconds"
+
+        now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+
+        items = sorted([item for item in {**self.sessions, **self.passes}.values() if item.end > now],
+                       key=lambda item:item.start)
+        if not items:
+            self.event_text.set("")
+            self.event_field.config(fg="red")
+        else:
+            item = items[0]
+            name = item.satellite if item.is_pass else item.code.upper()
+
+            if item.start > now:
+                name = item.satellite if item.is_pass else item.code.upper()
+                wait_time = item.start - now
+                self.event_text.set(f"{name} starts in {dt(wait_time)}")
+                self.event_field.config(fg="black" if wait_time > timedelta(minutes=30) else "red")
+            elif item.is_pass or item.is_intensive:
+                self.event_text.set(f"{name} is running. Ends in {dt(item.end - now)}")
+                self.event_field.config(fg="green")
+            else:  # This is a 24h session
+                # Check if intensives or passes inside this sessions
+                if not (inside := [sub for sub in items if sub.start < item.end and sub.end > now]):
+                    self.event_text.set(f"{name} is running. Ends in {dt(item.end - now)}")
+                    self.event_field.config(fg="green")
+                elif (sub_item := inside[0]).start > now:
+                    wait_time = sub_item.start - now
+                    sub_name = sub_item.satellite if sub_item.is_pass else sub_item.code.upper()
+                    self.event_text.set(f"{name} is running. {sub_name} starts in {dt(wait_time)}")
+                    self.event_field.config(fg="green" if wait_time > timedelta(minutes=20) else "red")
+                else:
+                    sub_name = sub_item.satellite if sub_item.is_pass else sub_item.code.upper()
+                    self.event_text.set(f"{name} is halted. {sub_name} is running. Ends in {dt(sub_item.end - now)}")
+                    self.event_field.config(fg="green")
+
+        status = bool(get_autofs_process())
+        self.autofs_status.set( f"AutoFS service is {'running' if status else 'NOT running'}")
+        self.autofs_field.config(fg='green' if status else 'red')
+        self.next_event(now, 5, self.update_event)
 
 def main(config_path):
     DashBoard(config_path)

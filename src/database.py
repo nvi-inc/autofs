@@ -426,4 +426,3 @@ class DBASE:
         return eval(f"{rec.type}(\'{rec.value}\')")
 
 
-

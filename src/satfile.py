@@ -29,7 +29,7 @@ class SatFileInfo:
 
         lolim, uplim = self.antenna.lolim1, self.antenna.uplim1
         if lolim < 0:
-            lolim, uplim = lolim + 3600, uplim + 360.0
+            lolim, uplim = lolim + 360.0, uplim + 360.0
         self.ccw = (lolim, lolim + 180.0)
         self.cw = (uplim - 180.0, uplim)
 

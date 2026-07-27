@@ -8,10 +8,12 @@ import itertools
 import traceback
 from operator import attrgetter
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from subprocess import Popen, PIPE
 from typing import Tuple, Optional, List, Dict
+
+from psutil import ZombieProcess
 
 from database import DBASE, TLE, Pass, Session
 from fsbridge import FSBridge
@@ -72,6 +74,8 @@ class AutoFS:
         self.stopped.set()
         for thread in self.threads.values():
             thread.stop()
+        # Kill fsbridge
+        self.bridge.kill()
 
     def reset(self, sig_num, frame):
         self.logger.warning(f'received signal {sig_num}. Reset triggers')
@@ -521,43 +525,61 @@ def service(config, debug=False):
 
 
 def reset():
-    import psutil
     import os
 
-    autofs_path = __file__
-    for prc in psutil.process_iter():
-        params = prc.cmdline()
-        if autofs_path in params and 'service' in params:
-            os.kill(prc.pid, signal.SIGUSR1)
+    if prc := get_autofs_process():
+        os.kill(prc.pid, signal.SIGUSR1)
             
 def kill():
-    import psutil
     import os
 
-    autofs_path = __file__
+    if prc := get_autofs_process():
+        os.kill(prc.pid, signal.SIGTERM)
+        print('Service killed')
 
-    for prc in psutil.process_iter():
-        params = prc.cmdline()
-        if autofs_path in params and 'service' in params:
-            os.kill(prc.pid, signal.SIGTERM) 
-            print('Service killed')
-        if any('fsbridge' in x for x in params):
-            os.kill(prc.pid, signal.SIGTERM)
-            print('Bridge killed')
 def start():
-    import psutil
-    autofs_path = __file__
-    for prc in psutil.process_iter():
-        params = prc.cmdline()
-        if autofs_path in params and 'service' in params:
-            print('AutoFS already runnig. Wont start. \nHint: You can kill it by running autofs kill')
-            return
+    if get_autofs_process() is not None:
+        print('AutoFS already running. Wont start. \nHint: You can kill it by running autofs kill')
+        return
     import subprocess
     subprocess.Popen(
         ['nohup', '/usr2/autofs/bin/autofs-service'],
         stdout=open('/dev/null', 'w'),
         stderr=open('/dev/null', 'w'))
     print('Started autofs') 
+
+
+def status():
+    if prc := get_autofs_process():
+        print(f'AutoFS is running since {datetime.fromtimestamp(prc.create_time())}.')
+    else:
+        print("\033[31mAutoFS in NOT running!\033[0m")
+
+def show_items(args):
+    dates = args.dates
+    begin = dates[0] if dates else date.today()
+    end = dates[1] if len(dates) > 1 else begin + timedelta(days=5)
+
+    url = Config(args.config).DataBase.url
+    cls, wrap = (Pass, True) if args.action == 'passes' else (Session, False)
+    with DBASE(url) as dbase:
+        records = dbase.orm_ses.query(cls).filter(cls.start.between(begin, end)).order_by(cls.start.asc()).all()
+        for record in records:
+            print(f"{record} {record.wrap.upper() if wrap else ''}")
+
+
+def get_autofs_process():
+    import psutil
+    autofs_path = __file__
+    for prc in psutil.process_iter():
+        try:
+            params = prc.cmdline()
+        except ZombieProcess:
+            continue
+        if autofs_path in params and 'service' in params:
+            return prc
+    return None
+
 
 if __name__ == "__main__":
     import argparse
@@ -574,7 +596,12 @@ if __name__ == "__main__":
     parsers.add_parser("reset", help="Reset autofs triggers. Wont restart autofs")
     parsers.add_parser("start", help="Start autofs service in the background")
     parsers.add_parser("kill", help="Kill autofs service")
-    parsers.add_parser("test", help="Test autofs")  
+    parsers.add_parser("status", help="Show status of autofs")
+    parsers.add_parser("test", help="Test autofs")
+    sub = parsers.add_parser("passes", help="Show passes")
+    sub.add_argument('dates', type=date.fromisoformat, nargs='*', default=[])
+    sub = parsers.add_parser("sessions", help="Show sessions")
+    sub.add_argument('dates', type=date.fromisoformat, nargs='*', default=[])
     parser.add_argument('-d', '--debug', action='store_true')
 
     args = parser.parse_args()
@@ -590,6 +617,10 @@ if __name__ == "__main__":
         start()
     elif args.action =='kill':
         kill()
+    elif args.action == 'status':
+        status()
+    elif args.action in ('passes', 'sessions'):
+        show_items(args)
     elif args.action =='test':
         autofs = AutoFS(args.config,debug=True)
         with DBASE(autofs.db_url) as dbase:
