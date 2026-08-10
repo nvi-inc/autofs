@@ -15,7 +15,7 @@ from typing import Tuple, Optional, List, Dict
 
 from psutil import ZombieProcess
 
-from database import DBASE, TLE, Pass, Session
+from database import DBASE, TLE, Pass, Session, SDE
 from fsbridge import FSBridge
 from sockets import Client
 from triggers import Manager, Trigger
@@ -128,6 +128,12 @@ class AutoFS:
 
             upcoming = dbase.get_next_sessions(days=14)  # The dashboard has 14 sessions
             self.validate_checks(upcoming, passes)
+
+            new_sde = get_upcoming_sde(self.vcc_config, days=14)
+            for data in new_sde:
+                sde = dbase.get_or_create(SDE, code=data['code'])
+                sde.update(dbase,data)
+            dbase.flush()
             dbase.commit()
 
     def close_schedule(self, dbase):
@@ -141,6 +147,13 @@ class AutoFS:
     def get_affected_session(self, satpass, sessions):
         buffer = timedelta(minutes=self.config.Satellite.timebuffer)
         for ses in sessions:
+            if satpass.intersecting(ses, buffer):
+                return ses
+        return None
+
+    def get_affected_sde(self, satpass, sdes):
+        buffer = timedelta(minutes=self.config.Satellite.timebuffer)
+        for ses in sdes:
             if satpass.intersecting(ses, buffer):
                 return ses
         return None
@@ -178,6 +191,7 @@ class AutoFS:
                 # Get next sessions and passes
                 sessions = dbase.get_next_sessions(days=5)
                 passes = [p for p in dbase.get_next_passes(days=5) if p.go]
+                sdes = dbase.get_next_sdes(days=5)
                 now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
                 # Make triggers for next session:
@@ -208,9 +222,20 @@ class AutoFS:
                                     except Exception as err:
                                         self.logger.error(str(err))
                                         self.logger.warning(f"\n{traceback.format_exc()}")
+
                                 else:
                                     self.event_satpass.echo(event_time)
-
+                            elif sde := self.get_affected_sde(satpass,sdes):
+                                if (event_time := satpass.start - sat_min_time) < now:
+                                        try:
+                                            self.make_pass_in_sde_trigger(satpass, sde)
+                                            self.event_satpass.reset()
+                                        except Exception as err:
+                                            self.logger.error(str(err))
+                                            self.logger.warning(f"\n{traceback.format_exc()}")
+                                else:
+                                    self.event_satpass.echo(event_time)
+                                
                             elif (event_time := satpass.start - trigger_delay) < now:
                                 self.make_pass_trigger(satpass)
                                 self.event_satpass.reset()
@@ -277,6 +302,51 @@ class AutoFS:
         if 'manager' in self.threads:
             self.threads['manager'].add_trigger(trigger)
         satpass.triggered = True
+
+
+
+    def make_pass_in_sde_trigger(self, satpass: Pass, sde: SDE):
+        key = f"{sde.code}-HALT"
+        self.logger.info(f"TRIGGER {key} {sde.code}")
+        halting_time = satpass.start - timedelta(minutes=5)
+
+        commands =[
+            f"halt@{time2fs(halting_time.timestamp()) }",  
+            f"\"Will halt to observe {satpass.satellite}"]
+        data = {'commands': commands }  # Halt 5 seconds after data_valid=on
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=halting_time.timestamp() + 10)
+        self.logger.debug(trigger)
+        if 'manager' in self.threads:
+            self.threads['manager'].add_trigger(trigger)
+
+
+        # Trigger that stop recorder and send start satellite observation
+        key = f"{satpass.code}-START"
+        self.logger.info(f"TRIGGER {key} {sde.code}")
+ 
+        commands = self.config.SDE.Procedures.start_antenna + self.config.Satellite.Procedures.pre.snaps
+        commands = self.add_sat_commands(commands, satpass)
+        data = {'commands': commands}
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=halting_time.timestamp()+ 60)
+        self.logger.debug(trigger)
+        if 'manager' in self.threads:
+            self.threads['manager'].add_trigger(trigger)
+
+
+        # trigger for stopping satellite observation and return to schedule
+        key = f"{satpass.code}-STOP"
+        self.logger.info(f"TRIGGER {key} {sde.code}")
+        restart_time = satpass.stop + timedelta(minutes=1)
+        name = f"{sde.code}{self.code}".lower()
+        commands = self.make_session_commands(name, False, self.config.SDE.Procedures.pre)
+        data = {'commands': commands}
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=restart_time.timestamp())
+        self.logger.debug(trigger)
+        if 'manager' in self.threads:
+            self.threads['manager'].add_trigger(trigger)
+        satpass.triggered = True
+
+
 
     def make_pass_in_session_trigger(self, satpass: Pass, session: Session, testing:bool=False):
         def add_sched_commands(cmds: List, scan: Scan, code: str):

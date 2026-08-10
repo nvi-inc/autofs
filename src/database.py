@@ -35,6 +35,39 @@ class AER:
         timestamp = self.time.replace(tzinfo=timezone.utc).timestamp()  #
         return f"{timestamp:10.0f} {self.time.isoformat()} {self.azimuth:8.3f} {self.elevation:9.3f}"
 
+class SDE(Base):
+
+    __tablename__ = 'sde'
+
+    code = Column('code', String(25), primary_key=True, unique=True)
+    start = Column('start', DateTime, nullable=False)
+    duration = Column('duration', BigInteger, nullable=False)
+
+    def __init__(self, code=None):
+            super().__init__()
+            if code:
+                self.code = code
+                self.start = datetime(1970,1,1)
+                self.duration = 60*60*60    # 60 hours
+
+    
+    @property
+    def end(self):
+        return self.start + timedelta(seconds=self.duration)
+
+    def __str__(self):
+        return f'SDE({self.code}, {self.start}, {self.duration})'
+
+    def update(self, dbase, data):
+            # Clean some information from data
+            data['start'] = datetime.fromisoformat(data['start']) if isinstance(data['start'], str) else data['start']
+            # Update session
+            for key, value in data.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+            dbase.flush()
+    
+ 
 
 class Session(Base):
 
@@ -264,7 +297,7 @@ class Pass(Base):
             for record in aer:
                 print(record.eph(), file=f)
 
-    def intersecting(self, session: Session, buffer: timedelta=None) -> bool:
+    def intersecting(self, session, buffer: timedelta=None) -> bool:
         buffer = buffer or timedelta(minutes=0)
         sat_start, sat_end = self.start - buffer, self.end + buffer
         if not any(sat_start <= t <= sat_end for t in (session.start, session.end)):
@@ -410,6 +443,11 @@ class DBASE:
         end = begin + timedelta(days=days+1)
 
         return self.orm_ses.query(Session).filter(Session.start.between(begin, end)).order_by(Session.start.asc()).all()
+
+    def get_next_sdes(self, days=1):
+            begin = datetime.now(tz=timezone.utc) - timedelta(days=1)
+            end = begin + timedelta(days=days+1)
+            return self.orm_ses.query(SDE).filter(SDE.start.between(begin, end)).order_by(SDE.start.asc()).all()
 
     def set_value(self, name, value):
         rec = self.get_or_create(Generic, name=name)

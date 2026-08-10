@@ -27,3 +27,16 @@ def get_upcoming_sessions(vcc_config: str, days: int=1) -> List:
             return []
         return [json_decoder(rsp.json()) for code in codes if (rsp := client.get(f"/sessions/{code}"))]
 
+
+    
+
+def get_upcoming_sde(vcc_config: str, days: int=1) -> List:
+    # Get upcoming session for station
+    vcc.settings.init(path=vcc_config)
+    code = vcc.settings.Signatures.NS[0]  # Extract station code from vcc config file
+    params = {'days': days + 1, 'begin': datetime.now(tz=timezone.utc) - timedelta(days=1)}
+    with VCC() as client:
+        raise NotImplemented('Implement this')
+        if not (codes := json_decoder(client.get(f'/sde/{code}', params=params).json())):
+            return []
+        return [json_decoder(rsp.json()) for code in codes if (rsp := client.get(f"/sessions/{code}"))]

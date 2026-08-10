@@ -110,6 +110,17 @@ pre = ["HALT_SCHED"]
 post = ["CONT_SCHED"]
 
 
+[SDE]
+auto = false 
+min_time = 2
+start_antenna = ["antenna=operate"] 
+
+[SDE.Procedures]
+pre = ["LOG", "\"Process started by AutoFS", "SCHED"]
+post = [ "stow", "\"Process ended by AutoFS", "log=station"]
+
+
+
 
 [FSbridge]
 app = "/usr2/autofs/bin/fsbridge"
