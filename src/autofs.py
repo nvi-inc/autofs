@@ -22,7 +22,7 @@ from triggers import Manager, Trigger
 from ops_events import RepeatFunction
 from utils import Config
 from fs_utils import SnapFile, Scan, time2fs, shift_wait_times
-from vcc_utils import get_upcoming_sessions
+from vcc_utils import get_upcoming_sessions, get_upcoming_sde
 
 import logging
 from logger import setup_logging
@@ -67,6 +67,7 @@ class AutoFS:
         self.db_url = self.config.DataBase.url
         self.lastpass, self.last_msg = None, datetime.now(tz=timezone.utc).replace(tzinfo=None)
         self.event_session, self.event_satpass = EchoEventTime('session'), EchoEventTime('satpass')
+        self.event_sde = EchoEventTime('sde')
         self.mutex = threading.Lock()
 
     def terminate(self, sig_num, frame):
@@ -129,7 +130,7 @@ class AutoFS:
             upcoming = dbase.get_next_sessions(days=14)  # The dashboard has 14 sessions
             self.validate_checks(upcoming, passes)
 
-            new_sde = get_upcoming_sde(self.vcc_config, days=14)
+            new_sde = get_upcoming_sde(self.vcc_config)
             for data in new_sde:
                 sde = dbase.get_or_create(SDE, code=data['code'])
                 sde.update(dbase,data)
@@ -158,24 +159,7 @@ class AutoFS:
                 return ses
         return None
 
-    def should_idle(self,dbase):
-        sessions = dbase.get_next_sessions(days=5)
-        passes = [p for p in dbase.get_next_passes(days=5) if p.go]
-        start_times = [x.start for x in sessions + passes if (not x.triggered)]
-        start_times.sort()
-        now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
-        for t in start_times:
-            if now < t:
-                # if event in the future
-                if (t-now) > timedelta(minutes=15):  # (hours=1):
-                    # closest event is more than an hour away
-                    # nothing to do
-                    if not self.idle:
-                        logger.info(f'Idling. Next event at {t=}.')
-                    self.idle = True
-                else:
-                    self.idle = False
-                break
+
 
     def make_triggers(self):
         # Check if fsbridge and fs are running
@@ -207,6 +191,19 @@ class AutoFS:
                                 self.event_session.echo(event_time)
                         break
 
+                
+                for sde in sdes:
+                    config = self.config.SDE
+                    if config.auto and sde.start > now:  # Do not start late schedule in auto mode
+                        if not sde.triggered:
+                            if (event_time := sde.start - trigger_delay) < now:
+                                self.make_sde_triggers(sde, config)
+                                dbase.commit()
+                                self.event_sde.reset()
+                            else:
+                                self.event_sde.echo(event_time)
+                        break
+
                 #start = satpass.start - timedelta(minutes=self.config.Satellite.Procedures.Pre.min_time)
                 sat_min_time = timedelta(minutes=self.config.Satellite.Procedures.Pre.min_time)
                 # Make trigger for next pass
@@ -217,7 +214,7 @@ class AutoFS:
                                 if (event_time := satpass.start - sat_min_time) < now:
                                     # Start trigger after session has started
                                     try:
-                                        self.make_pass_in_session_trigger(satpass, session)
+                                        self.make_pass_in_session_trigger(satpass, session, testing=True)
                                         self.event_satpass.reset()
                                     except Exception as err:
                                         self.logger.error(str(err))
@@ -313,8 +310,8 @@ class AutoFS:
         commands =[
             f"halt@{time2fs(halting_time.timestamp()) }",  
             f"\"Will halt to observe {satpass.satellite}"]
-        data = {'commands': commands }  # Halt 5 seconds after data_valid=on
-        trigger = Trigger(key, self.exec_trigger, data=data, expiring=halting_time.timestamp() + 10)
+        data = {'commands': commands } 
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=halting_time.timestamp() - 10)
         self.logger.debug(trigger)
         if 'manager' in self.threads:
             self.threads['manager'].add_trigger(trigger)
@@ -324,7 +321,7 @@ class AutoFS:
         key = f"{satpass.code}-START"
         self.logger.info(f"TRIGGER {key} {sde.code}")
  
-        commands = self.config.SDE.Procedures.start_antenna + self.config.Satellite.Procedures.pre.snaps
+        commands = self.config.Satellite.Procedures.Pre.snaps
         commands = self.add_sat_commands(commands, satpass)
         data = {'commands': commands}
         trigger = Trigger(key, self.exec_trigger, data=data, expiring=halting_time.timestamp()+ 60)
@@ -436,6 +433,31 @@ class AutoFS:
             else:
                 commands.append(snap)
         return commands
+
+    def make_sde_triggers(self, sde: SDE, config: object):
+        start = sde.start - timedelta(minutes=config.min_time)
+        # Trigger for starting session observation
+        name = f"{sde.code}{self.code}".lower()
+        key = f"{name.upper()}-START"
+        self.logger.info(f'TRIGGER {key}')
+        data = {'commands': self.make_session_commands(name, False, config.Procedures.pre)}
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=start.timestamp())
+        self.logger.debug(trigger)
+        if 'manager' in self.threads:
+            self.threads['manager'].add_trigger(trigger)
+        # Trigger for stopping session observation
+
+
+
+        key = f"{name.upper()}-STOP"
+        self.logger.info(f'TRIGGER {key}')
+        data = {'commands': self.make_session_commands(name, False, config.Procedures.post)}
+        trigger = Trigger(key, self.exec_trigger, data=data, expiring=sde.end.timestamp())
+        self.logger.debug(trigger)
+        if 'manager' in self.threads:
+            self.threads['manager'].add_trigger(trigger)
+        sde.triggered = True
+
 
     def make_session_triggers(self, session: Session, config: object):
         start = session.start - timedelta(minutes=config.min_time)
@@ -551,6 +573,8 @@ class AutoFS:
                 session.triggered = False
             for satpass in dbase.get_next_passes(days=5):
                 satpass.triggered = False
+            for sde in dbase.get_next_sdes(days=5):
+                sde.triggered = False
             dbase.commit()
 
     def run(self):
@@ -693,26 +717,57 @@ if __name__ == "__main__":
         show_items(args)
     elif args.action =='test':
         autofs = AutoFS(args.config,debug=True)
+        autofs.update_sessions()
+        autofs.clean_triggers()
+        autofs.make_triggers()
+
         with DBASE(autofs.db_url) as dbase:
             sessions = dbase.get_next_sessions(days=5)
             passes = [p for p in dbase.get_next_passes(days=5) if p.go]
+            sdes = dbase.get_next_sdes(days=5)
+
             now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
             # Make triggers for next session:
+            trigger_delay = timedelta(hours=1)
+            for sde in sdes:
+                config = autofs.config.SDE
+                if config.auto and sde.start > now:  # Do not start late schedule in auto mode
+                    print(sde)
+                    if not sde.triggered:
+                        autofs.make_sde_triggers(sde, config)
+                        dbase.commit()
+                        autofs.event_sde.reset()
+                    
+                    break
+
+
             for satpass in passes:
-                
-                print(satpass.code, satpass.start, satpass.stop)
-                session = autofs.get_affected_session(satpass, sessions)
-                print(session)
-                if session:
-                    autofs.make_pass_in_session_trigger(satpass, session,testing=True)
-                    autofs.event_satpass.reset()
-                 #   break
-                elif (event_time := satpass.start ) > now:
-                    autofs.make_pass_trigger(satpass)
-                    autofs.event_satpass.reset()
-                else:
-                    autofs.event_satpass.echo(event_time)
-            
+                    if satpass.start > now:
+                        if not satpass.triggered:
+                            if session := autofs.get_affected_session(satpass, sessions):
+                                
+                                try:
+                                    autofs.make_pass_in_session_trigger(satpass, session, testing=True)
+                                    autofs.event_satpass.reset()
+                                except Exception as err:
+                                    autofs.logger.error(str(err))
+                                    autofs.logger.warning(f"\n{traceback.format_exc()}")
+
+                                
+                            elif sde := autofs.get_affected_sde(satpass,sdes):
+                                
+                                try:
+                                    autofs.make_pass_in_sde_trigger(satpass, sde)
+                                    autofs.event_satpass.reset()
+                                except Exception as err:
+                                    autofs.logger.error(str(err))
+                                    autofs.logger.warning(f"\n{traceback.format_exc()}")
+                                
+                                
+                            else:
+                                autofs.make_pass_trigger(satpass)
+                                autofs.event_satpass.reset()
+                         
 
     else:
         DashBoard(args.config)

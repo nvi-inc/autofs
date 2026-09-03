@@ -111,9 +111,8 @@ post = ["CONT_SCHED"]
 
 
 [SDE]
-auto = false 
+auto = true 
 min_time = 2
-start_antenna = ["antenna=operate"] 
 
 [SDE.Procedures]
 pre = ["LOG", "\"Process started by AutoFS", "SCHED"]

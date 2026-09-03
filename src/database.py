@@ -42,6 +42,7 @@ class SDE(Base):
     code = Column('code', String(25), primary_key=True, unique=True)
     start = Column('start', DateTime, nullable=False)
     duration = Column('duration', BigInteger, nullable=False)
+    triggered = Column('triggered', Boolean , nullable=False)
 
     def __init__(self, code=None):
             super().__init__()
@@ -49,6 +50,7 @@ class SDE(Base):
                 self.code = code
                 self.start = datetime(1970,1,1)
                 self.duration = 60*60*60    # 60 hours
+                self.triggered = False
 
     
     @property
@@ -56,7 +58,7 @@ class SDE(Base):
         return self.start + timedelta(seconds=self.duration)
 
     def __str__(self):
-        return f'SDE({self.code}, {self.start}, {self.duration})'
+        return f'SDE({self.code}, {self.start}, {self.duration} {self.triggered})'
 
     def update(self, dbase, data):
             # Clean some information from data
@@ -67,7 +69,13 @@ class SDE(Base):
                     setattr(self, key, value)
             dbase.flush()
     
- 
+    @property
+    def is_pass(self):
+        return False
+    
+    @property
+    def is_intensive(self):
+        return False
 
 class Session(Base):
 
@@ -239,7 +247,7 @@ class Pass(Base):
 
     def __str__(self):
         m, s = divmod(int(self.duration), 60)
-        return (f"{self.satellite.upper():12s} {self.start} {self.stop} {s:02d}:{m:02d} "
+        return (f"{self.satellite.upper():12s} {self.start} {self.stop} {m:02d}:{s:02d} "
                 f"{'go   ' if self.go else 'no go'}")
 
     def __repr__(self):

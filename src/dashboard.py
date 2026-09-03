@@ -209,6 +209,15 @@ class TimeLine(tk.Frame):
             fig = OpsFigure(ses.code, start, dt, '', 'orange', 'black', 1, 'white', 12)
             self.add_figure(1, 'post-obs', fig)
 
+    
+    def add_sde(self, sde):
+        triggered = False 
+        fill = 'grey'
+        label = sde.code.upper()
+        fig = OpsFigure(sde.code, sde.start, sde.duration, label, fill, 'black', 1, 'white', 12,
+                        triggered=triggered, top=False)
+        self.add_figure(1,'sde',fig)
+
     def add_satpass(self, satpass):
         fig = OpsFigure(f"{satpass.code}", satpass.start, satpass.duration, '',
                         'blue' if satpass.go else 'skyblue', 'black', 0, 'white', 12, satpass.triggered, True)
@@ -332,12 +341,19 @@ class DashBoard(tk.Tk):
         with DBASE(self.config.DataBase.url) as dbase:
             self.sessions = {ses.code: ses for ses in dbase.get_next_sessions(days=15)}
             self.passes = {s.code: s for s in dbase.get_next_passes(days=5)}
+            self.sdes = {s.code: s for s in dbase.get_next_sdes(days=5)}
 
+
+        for sde in self.sdes.values():
+            self.time_line.add_sde(sde)
+            
         for session in self.sessions.values():
             config = self.config.Intensive if session.is_intensive else self.config.Standard
             self.time_line.add_session(session, config)
         for satpass in self.passes.values():
             self.time_line.add_satpass(satpass)
+        
+
         self.update_events()
 
         self.after(60000, self.refresh_timeline)  # Refresh every minutes
@@ -449,14 +465,19 @@ class DashBoard(tk.Tk):
 
     def refresh_event(self, event, timeline=False):
         sessions = [ses for ses in self.sessions.values() if ses.code != event.code]
+        sdes = [ses for ses in self.sdes.values() if ses.code != event.code]
         if event.is_pass:
             description = f"{event.satellite} tracking"
             status = 'GO' if event.go else 'NO GO'
 
-        else:
+        elif hasattr(event,'master'):  # for sessions
             description = f"{event.master.capitalize()} {event.type}"
             config = self.config.Intensive if event.is_intensive else self.config.Standard
             status = 'auto' if config.auto else 'manual'
+
+        else: # sdes
+            description = f"Single Dish Experiment"
+            status = 'manual'
 
         start, hm = event.start.strftime("%Y-%m-%d %H:%M"), duration(event.duration)
         name = event.satellite if event.is_pass else event.code.upper()
@@ -467,6 +488,10 @@ class DashBoard(tk.Tk):
                 if event.intersecting(ses):
                     inside = ses.code.upper()
                     break
+            for sde in sdes:
+                if event.intersecting(sde):
+                    inside = sde.code.upper()
+                    break
         vals = (name, description, start, hm, inside, status)
 
         self.events.item(event.code, values=vals)
@@ -474,7 +499,9 @@ class DashBoard(tk.Tk):
             self.time_line.refresh_pass(event)
 
     def update_events(self):
-        events = sorted([*list(self.sessions.values()), *list(self.passes.values())], key=lambda item: item.start)
+        events = sorted([*list(self.sessions.values()), *list(self.passes.values()), *list(self.sdes.values()) ]
+            , key=lambda item: item.start)
+        
         for index, event in enumerate(events):
             code = event.code
             if event.end < datetime.now(tz=timezone.utc).replace(tzinfo=None):

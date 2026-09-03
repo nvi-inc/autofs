@@ -10,6 +10,9 @@ log*
 .idea*
 # satfiles
 *.sat 
+*.txt
+*.template
+\#*
 # Distribution / packaging
 .Python
 build/
