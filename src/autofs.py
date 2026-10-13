@@ -251,7 +251,7 @@ class AutoFS:
                 cmds.append("satellite=")
             elif cmd == 'SATTRACK':
                 cmds.append(f"\"{satpass.name} {satpass.start} {satpass.stop}")
-                cmds.append('gritss_setup')
+                cmds.append('gritss_pre')
                 cmds.append(self.mark6_command(satpass))
                 cmds.append(f"ephemeris={satpass.satellite},{satpass.name}.eph,track,{satpass.wrap}")
             elif cmd == 'SATLOG':
@@ -320,8 +320,8 @@ class AutoFS:
         # Trigger that stop recorder and send start satellite observation
         key = f"{satpass.code}-START"
         self.logger.info(f"TRIGGER {key} {sde.code}")
- 
-        commands = self.config.Satellite.Procedures.Pre.snaps
+
+        commands = ['schedule='] +  self.config.Satellite.Procedures.Pre.snaps
         commands = self.add_sat_commands(commands, satpass)
         data = {'commands': commands}
         trigger = Trigger(key, self.exec_trigger, data=data, expiring=halting_time.timestamp()+ 60)
@@ -719,7 +719,7 @@ if __name__ == "__main__":
         autofs = AutoFS(args.config,debug=True)
         autofs.update_sessions()
         autofs.clean_triggers()
-        autofs.make_triggers()
+      #  autofs.make_triggers()
 
         with DBASE(autofs.db_url) as dbase:
             sessions = dbase.get_next_sessions(days=5)

@@ -48,7 +48,7 @@ snaps = ["SATLOG", "\"Process started by AutoFS", "SATTRACK"]
 # any other snap command can be called otherwise e.g. post checks
 
 min_time = 10 # required time to run post-checks default = 10
-snaps = ["stow", "gritss_clean", "\"Process ended by AutoFS", "log=station"]
+snaps = ["stow", "gritss_post", "\"Process ended by AutoFS", "log=station"]
 
 [Satellite.Procedures.Session.Pre]
 # run these snaps or commands BEFORE satellite observation IN standard session
@@ -61,7 +61,7 @@ snaps = ["HALT_SCHED", "schedule=", "SATLOG", "SATTRACK"]
 # all caps ones are read and modified by the software for each pass
 # any other snap command can be called otherwise e.g. post checks
 
-snaps = ["gritss_clean","CONT_SCHED"]
+snaps = ["gritss_post","CONT_SCHED"]
 
 [Satellite.NickName]
 # satellite experiment nicknames. mainly used for naming experiments

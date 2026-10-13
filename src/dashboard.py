@@ -210,12 +210,11 @@ class TimeLine(tk.Frame):
             self.add_figure(1, 'post-obs', fig)
 
     
-    def add_sde(self, sde):
-        triggered = False 
+    def add_sde(self, sde ):
         fill = 'grey'
         label = sde.code.upper()
         fig = OpsFigure(sde.code, sde.start, sde.duration, label, fill, 'black', 1, 'white', 12,
-                        triggered=triggered, top=False)
+                        triggered=sde.triggered, top=False)
         self.add_figure(1,'sde',fig)
 
     def add_satpass(self, satpass):
@@ -327,7 +326,7 @@ class DashBoard(tk.Tk):
         signal.signal(signal.SIGUSR1, self.goto_top)
         signal.signal(signal.SIGUSR2, self.refresh)
 
-        self.sessions, self.passes, self.events = {}, {}, None
+        self.sessions, self.passes, self.sdes, self.events = {},{}, {}, None
         self.utc, self.autofs_field, self.autofs_status = tk.StringVar(), None, tk.StringVar()
         self.event_field, self.event_text = None, tk.StringVar()
         self.time_line = None
@@ -477,7 +476,7 @@ class DashBoard(tk.Tk):
 
         else: # sdes
             description = f"Single Dish Experiment"
-            status = 'manual'
+            status = 'auto' if self.config.SDE.auto else 'manual'
 
         start, hm = event.start.strftime("%Y-%m-%d %H:%M"), duration(event.duration)
         name = event.satellite if event.is_pass else event.code.upper()
@@ -552,7 +551,7 @@ class DashBoard(tk.Tk):
 
         now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
-        items = sorted([item for item in {**self.sessions, **self.passes}.values() if item.end > now],
+        items = sorted([item for item in {**self.sessions, **self.passes, **self.sdes}.values() if item.end > now],
                        key=lambda item:item.start)
         if not items:
             self.event_text.set("")
